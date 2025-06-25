@@ -1,16 +1,13 @@
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
-import tkinter as tk
+import openai
+from pathlib import Path
 
-def show_plot():
-    print("SHOW!")  # 確認用
-    plt.plot([1, 2, 3], [4, 5, 6])
-    plt.title("テストグラフ")
-    plt.grid()
-    plt.tight_layout()
-    plt.show()
+def load_api_key_from_file() -> str:
+    # 現在のスクリプトの一つ上のディレクトリの assets/openai_key.txt を参照
+    key_path = Path(__file__).resolve().parent.parent / "assets" / "openai_key.txt"
+    with open(key_path, "r", encoding="utf-8") as f:
+        return f.readline().strip()
 
-root = tk.Tk()
-tk.Button(root, text="グラフを表示", command=lambda: root.after(100, show_plot)).pack(padx=20, pady=20)
-root.mainloop()
+openai.api_key = load_api_key_from_file()
+
+for model in openai.models.list():
+    print(model.id)

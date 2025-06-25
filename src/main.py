@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from datetime import timedelta
+import openai
 
 plt.rcParams["font.family"] = "Yu Gothic"
 
@@ -29,6 +30,12 @@ whisper_model = whisper.load_model("large-v3", device="cuda")
 class Clip:
     start_time: float
     end_time: float
+
+def load_api_key_from_file() -> str:
+    # 現在のスクリプトの一つ上のディレクトリの assets/openai_key.txt を参照
+    key_path = Path(__file__).resolve().parent.parent / "assets" / "openai_key.txt"
+    with open(key_path, "r", encoding="utf-8") as f:
+        return f.readline().strip()
 
 def group_segments_by_duration(segments: List[dict], min_dur: int, max_dur: int) -> List[Clip]:
     clips = []
@@ -61,6 +68,55 @@ def format_timestamp(seconds: float) -> str:
     ms = int((seconds - int(seconds)) * 1000)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
+def call_gpt_proofread_segments(segments: List[dict]) -> List[dict]:
+    """
+    Whisperのsegmentsから校閲された字幕データ（段落単位）をChatGPT APIで取得
+    戻り値は List[{start_index, end_index, text}]
+    """
+    print("🤖 ChatGPT に字幕校閲を依頼中...")
+
+    raw_lines = [f"{i}: {seg['text']}" for i, seg in enumerate(segments)]
+    full_text = "\n".join(raw_lines)
+
+    prompt = (
+        "以下は日本語の音声認識結果です（各行はインデックス付き）。\n"
+        "誤字脱字を修正し、自然な段落にまとめ直してください。\n"
+        "各段落には、元の発話インデックス範囲を `#start=3,end=7` のように付けてください。\n\n"
+        + full_text
+    )
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "あなたは日本語音声認識結果を自然な文章に整えるプロ編集者です。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2
+        )
+    except Exception as e:
+        print(f"❌ ChatGPT API エラー: {e}")
+        raise
+
+    print("✅ ChatGPT 校閲完了")
+
+    content = response["choices"][0]["message"]["content"]
+
+    # パース：#start=x,end=y のブロックとテキストを抽出
+    import re
+    blocks = re.split(r"#start=(\d+),end=(\d+)", content)
+    parsed = []
+    for i in range(1, len(blocks)-1, 3):
+        start_idx = int(blocks[i])
+        end_idx = int(blocks[i+1])
+        text = blocks[i+2].strip()
+        parsed.append({
+            "start_index": start_idx,
+            "end_index": end_idx,
+            "text": text
+        })
+    return parsed
+
 def escape_ffmpeg_path(path: Path) -> str:
     path = path.as_posix()
     if ":" in path:
@@ -72,6 +128,8 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     clip_path = output_dir / f"clip_{index}.mp4"
     srt_path = output_dir / f"clip_{index}.srt"
     subtitled_path = output_dir / f"clip_{index}_subtitled.mp4"
+
+    # ① 動画を切り出し
     subprocess.run([
         "ffmpeg", "-y",
         "-ss", str(clip.start_time),
@@ -81,16 +139,26 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
         "-c:a", "aac",
         str(clip_path)
     ], check=True)
+
+    # ② Whisperで字幕セグメント取得
     result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe")
-    if not any(seg["text"].strip() for seg in result["segments"]):
+    segments = result["segments"]
+
+    if not any(seg["text"].strip() for seg in segments):
         clip_path.unlink(missing_ok=True)
         return
+
+    # ③ ChatGPTで誤字脱字＋段落整形
+    gpt_segments = call_gpt_proofread_segments(segments)
+
+    # ④ SRT出力（GPT整形済み）
     with open(srt_path, "w", encoding="utf-8") as f:
-        for i, seg in enumerate(result["segments"]):
-            start = format_timestamp(seg["start"])
-            end = format_timestamp(seg["end"])
-            text = seg["text"].strip()
-            f.write(f"{i+1}\n{start} --> {end}\n{text}\n\n")
+        for i, item in enumerate(gpt_segments):
+            start = format_timestamp(segments[item["start_index"]]["start"])
+            end = format_timestamp(segments[item["end_index"]]["end"])
+            f.write(f"{i+1}\n{start} --> {end}\n{item['text']}\n\n")
+
+    # ⑤ 字幕を焼き込み
     subtitle_filter = f"subtitles='{escape_ffmpeg_path(srt_path)}'"
     subprocess.run([
         "ffmpeg", "-y", "-i", str(clip_path),
@@ -108,6 +176,9 @@ def normalize_youtube_url(url: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
 def main():
+    # 使用時にセット
+    openai.api_key = load_api_key_from_file()
+    
     root = tk.Tk()
     root.title("YouTubeチャット＆動画処理ツール")
     frame = tk.Frame(root, padx=20, pady=20)
