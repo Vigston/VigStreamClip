@@ -69,52 +69,105 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 def call_gpt_proofread_segments(segments: List[dict]) -> List[dict]:
-    """
-    Whisperのsegmentsから校閲された字幕データ（段落単位）をChatGPT APIで取得
-    戻り値は List[{start_index, end_index, text}]
-    """
-    print("🤖 ChatGPT に字幕校閲を依頼中...")
+    print("🤖 ChatGPT に誤字脱字の修正を依頼中...")
 
     raw_lines = [f"{i}: {seg['text']}" for i, seg in enumerate(segments)]
     full_text = "\n".join(raw_lines)
 
     prompt = (
         "以下は日本語の音声認識結果です（各行はインデックス付き）。\n"
-        "誤字脱字を修正し、自然な段落にまとめ直してください。\n"
-        "各段落には、元の発話インデックス範囲を `#start=3,end=7` のように付けてください。\n\n"
-        + full_text
+        "文の構成や順序は絶対に変更せず、誤字脱字のみを修正してください。\n\n"
+        "【重要な指示】\n"
+        "- 行の順番を変えないでください。\n"
+        "- 行を削除したり追加しないでください。\n"
+        "- 各行は `インデックス: 修正後の文` の形式で返してください。\n"
+        "- 空白や句読点の修正も最小限にしてください。\n"
+        "- 入力行数と出力行数は必ず一致させてください。\n\n"
+        "以下が修正対象の入力です：\n\n" + full_text
     )
 
     try:
-        response = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "あなたは日本語音声認識結果を自然な文章に整えるプロ編集者です。"},
+                {"role": "system", "content": "あなたは日本語音声認識の誤字脱字を修正するプロの編集者です。"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2
         )
     except Exception as e:
-        print(f"❌ ChatGPT API エラー: {e}")
+        print(f"❌ ChatGPT API エラー:\n\n{e}")
         raise
 
-    print("✅ ChatGPT 校閲完了")
+    print("✅ ChatGPT 校関完了")
 
-    content = response["choices"][0]["message"]["content"]
+    content = response.choices[0].message.content
 
-    # パース：#start=x,end=y のブロックとテキストを抽出
+    corrected_segments = []
+    for line in content.strip().splitlines():
+        if ':' not in line:
+            continue
+        try:
+            index_str, text = line.split(":", 1)
+            index = int(index_str.strip())
+            if 0 <= index < len(segments):
+                corrected_segments.append({
+                    "index": index,
+                    "text": text.strip()
+                })
+        except Exception:
+            continue
+
+    return corrected_segments
+
+def call_gpt_group_segments(corrected_segments: List[dict]) -> List[dict]:
+    print("📚 ChatGPT に段落構造の抽出を依頼中...")
+
+    raw_lines = [f"{i}: {seg['text']}" for i, seg in enumerate(corrected_segments)]
+    full_text = "\n".join(raw_lines)
+
+    prompt = (
+        "以下は日本語の音声認識結果（誤字修正済み）です（各行はインデックス付き）。\n"
+        "文の内容を変えずに、自然なまとまりで段落を作ってください。\n"
+        "各段落には、元のインデックス範囲を `#start=3,end=7` の形式で示してください。\n"
+        "テキスト本文は不要です。インデックス範囲だけで構いません。\n\n"
+        + full_text
+    )
+
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "あなたは日本語の発話を自然な段落に区切る編集者です。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2
+        )
+    except Exception as e:
+        print(f"❌ ChatGPT API エラー:\n\n{e}")
+        return []
+
+    content = response.choices[0].message.content
+
+    # インデックス範囲の抽出
     import re
-    blocks = re.split(r"#start=(\d+),end=(\d+)", content)
+    blocks = re.findall(r"#start=(\d+),end=(\d+)", content)
+
     parsed = []
-    for i in range(1, len(blocks)-1, 3):
-        start_idx = int(blocks[i])
-        end_idx = int(blocks[i+1])
-        text = blocks[i+2].strip()
+    for start, end in blocks:
+        start_idx = int(start)
+        end_idx = int(end)
+        # 対応するテキストを連結（句点なしも考慮し、スペース区切り）
+        joined_text = " ".join(
+            corrected_segments[i]["text"] for i in range(start_idx, end_idx + 1)
+        ).strip()
         parsed.append({
             "start_index": start_idx,
             "end_index": end_idx,
-            "text": text
+            "text": joined_text
         })
+
+    print(f"✅ 段落構造抽出完了（{len(parsed)} 段落）")
     return parsed
 
 def escape_ffmpeg_path(path: Path) -> str:
@@ -127,7 +180,10 @@ def escape_ffmpeg_path(path: Path) -> str:
 def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     clip_path = output_dir / f"clip_{index}.mp4"
     srt_path = output_dir / f"clip_{index}.srt"
+    raw_srt_path = output_dir / f"clip_{index}_raw.srt"
+    diff_path = output_dir / f"clip_{index}_diff.txt"
     subtitled_path = output_dir / f"clip_{index}_subtitled.mp4"
+    structure_path = output_dir / f"clip_{index}_structure.json"
 
     # ① 動画を切り出し
     subprocess.run([
@@ -148,17 +204,41 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
         clip_path.unlink(missing_ok=True)
         return
 
-    # ③ ChatGPTで誤字脱字＋段落整形
-    gpt_segments = call_gpt_proofread_segments(segments)
+    # ③ 校閲前字幕を raw_srt に保存
+    with open(raw_srt_path, "w", encoding="utf-8") as f:
+        for i, seg in enumerate(segments):
+            start = format_timestamp(seg["start"])
+            end = format_timestamp(seg["end"])
+            text = seg["text"].strip()
+            f.write(f"{i+1}\n{start} --> {end}\n{text}\n\n")
 
-    # ④ SRT出力（GPT整形済み）
+    # ④ ChatGPTで誤字脱字のみ修正
+    corrected = call_gpt_proofread_segments(segments)
+
+    # ⑤ 校閲済み字幕を srt に保存（タイミングはWhisper通り）
     with open(srt_path, "w", encoding="utf-8") as f:
-        for i, item in enumerate(gpt_segments):
-            start = format_timestamp(segments[item["start_index"]]["start"])
-            end = format_timestamp(segments[item["end_index"]]["end"])
-            f.write(f"{i+1}\n{start} --> {end}\n{item['text']}\n\n")
+        for i, corr in enumerate(corrected):
+            seg = segments[corr["index"]]
+            start = format_timestamp(seg["start"])
+            end = format_timestamp(seg["end"])
+            f.write(f"{i+1}\n{start} --> {end}\n{corr['text']}\n\n")
 
-    # ⑤ 字幕を焼き込み
+    # ⑥ 差分ログを出力
+    with open(diff_path, "w", encoding="utf-8") as f:
+        f.write("📝 修正ログ（インデックスごとの差分）\n\n")
+        for corr in corrected:
+            original = segments[corr["index"]]["text"].strip()
+            corrected_text = corr["text"]
+            if original != corrected_text:
+                f.write(f"[{corr['index']}]\nBefore: {original}\nAfter:  {corrected_text}\n\n")
+
+    # ⑦ ChatGPTで段落構造を生成（クリップ判定用に別途保持）
+    structure = call_gpt_group_segments(segments)
+    if structure:
+        with open(structure_path, "w", encoding="utf-8") as f:
+            json.dump(structure, f, ensure_ascii=False, indent=2)
+
+    # ⑧ 字幕を焼き込み
     subtitle_filter = f"subtitles='{escape_ffmpeg_path(srt_path)}'"
     subprocess.run([
         "ffmpeg", "-y", "-i", str(clip_path),
@@ -167,6 +247,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
         "-c:a", "copy",
         str(subtitled_path)
     ], check=True)
+
 
 def normalize_youtube_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
