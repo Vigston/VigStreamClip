@@ -292,6 +292,56 @@ def main():
     
     root = tk.Tk()
     root.title("YouTubeチャット＆動画処理ツール")
+    
+    # 設定データ
+    settings = {"resolution": "1920x1080"}
+    # メニューバー追加
+    menubar = tk.Menu(root)
+    root.config(menu=menubar)
+    
+    def open_settings_window():
+        settings_window = tk.Toplevel(root)
+        settings_window.title("設定")
+        settings_window.geometry("300x120")
+
+        tk.Label(settings_window, text="解像度を設定:").pack(pady=10)
+
+        # 現在の設定から横・縦を分離
+        current_res = settings.get("resolution", "1920x1080")
+        default_width, default_height = current_res.lower().split("x")
+
+        # 横幅・縦幅のエントリボックス
+        entry_frame = tk.Frame(settings_window)
+        entry_frame.pack()
+
+        width_var = tk.StringVar(value=default_width)
+        height_var = tk.StringVar(value=default_height)
+
+        width_entry = tk.Entry(entry_frame, textvariable=width_var, width=6)
+        width_entry.pack(side=tk.LEFT)
+
+        tk.Label(entry_frame, text=" x ").pack(side=tk.LEFT)
+
+        height_entry = tk.Entry(entry_frame, textvariable=height_var, width=6)
+        height_entry.pack(side=tk.LEFT)
+
+        def save_settings():
+            w = width_var.get().strip()
+            h = height_var.get().strip()
+            if not w.isdigit() or not h.isdigit():
+                messagebox.showerror("エラー", "横幅・縦幅には数値を入力してください。")
+                return
+            settings["resolution"] = f"{w}x{h}"
+            messagebox.showinfo("設定保存", f"解像度を {settings['resolution']} に設定しました")
+            settings_window.destroy()
+
+        tk.Button(settings_window, text="保存", command=save_settings).pack(pady=10)
+    
+    # メニュー項目
+    setting_menu = tk.Menu(menubar, tearoff=0)
+    menubar.add_cascade(label="設定", menu=setting_menu)
+    setting_menu.add_command(label="解像度", command=open_settings_window)
+    
     frame = tk.Frame(root, padx=20, pady=20)
     frame.pack()
 
@@ -348,14 +398,21 @@ def main():
         if os.path.exists(state["video_file"]):
             messagebox.showinfo("情報", "動画ファイルは既に存在します。")
             return
+    
+        # 解像度指定に基づくformat条件を構築
+        resolution = settings.get("resolution", "1920x1080")
+        width, height = resolution.lower().split("x")
+    
+        format_selector = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]"
+    
         subprocess.run([
             "yt-dlp",
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
+            "-f", format_selector,
             "--merge-output-format", "mp4",
             "-o", state["video_file"],
             state["video_url"]
         ])
-        messagebox.showinfo("完了", "動画ダウンロード完了！")
+        messagebox.showinfo("完了", f"動画ダウンロード完了！（解像度: {resolution}）")
 
     def analyze_and_plot():
         def analyze():
