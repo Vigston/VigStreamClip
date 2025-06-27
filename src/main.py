@@ -75,14 +75,17 @@ def call_gpt_proofread_segments(segments: List[dict]) -> List[dict]:
     full_text = "\n".join(raw_lines)
 
     prompt = (
-        "以下は日本語の音声認識結果です（各行はインデックス付き）。\n"
-        "文の構成や順序は絶対に変更せず、誤字脱字のみを修正してください。\n\n"
+        "以下は音声認識ツール『Whisper』によって自動生成された日本語の文字起こし結果です。\n"
+        "各行は音声セグメントに対応しており、インデックス付きで表示されています。\n"
+        "あなたの仕事は **音声認識に起因する誤字脱字のみ** を修正することです。\n\n"
         "【重要な指示】\n"
-        "- 行の順番を変えないでください。\n"
-        "- 行を削除したり追加しないでください。\n"
+        "- 各行の構文や順序を絶対に変更しないでください。\n"
+        "- 文を削除・追加・補完しないでください。\n"
+        "- 行の内容を GPT が生成しないでください（例：「ありがとうございました」などを追加しない）。\n"
         "- 各行は `インデックス: 修正後の文` の形式で返してください。\n"
-        "- 空白や句読点の修正も最小限にしてください。\n"
-        "- 入力行数と出力行数は必ず一致させてください。\n\n"
+        "- 空白や句読点の修正は最小限にしてください。\n"
+        "- 入力と出力の行数・インデックスは完全に一致させてください。\n"
+        "- 出力はテキストのみ。説明や補足は不要です。\n\n"
         "以下が修正対象の入力です：\n\n" + full_text
     )
 
@@ -170,6 +173,30 @@ def call_gpt_group_segments(corrected_segments: List[dict]) -> List[dict]:
     print(f"✅ 段落構造抽出完了（{len(parsed)} 段落）")
     return parsed
 
+def remove_redundant_segments(segments: List[dict], max_repeat: int = 2) -> List[dict]:
+    """
+    同じテキストが連続して max_repeat 回以上出てきたらそれ以降を除外する。
+    """
+    filtered_segments = []
+    last_text = None
+    repeat_count = 0
+
+    for seg in segments:
+        text = seg["text"].strip()
+
+        if text == last_text:
+            repeat_count += 1
+        else:
+            repeat_count = 0
+            last_text = text
+
+        if repeat_count < max_repeat:
+            filtered_segments.append(seg)
+        else:
+            print(f"⚠️ 重複セグメントをスキップ: {text} [{seg['start']} ~ {seg['end']}]")
+
+    return filtered_segments
+
 def escape_ffmpeg_path(path: Path) -> str:
     path = path.as_posix()
     if ":" in path:
@@ -199,6 +226,9 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     # ② Whisperで字幕セグメント取得
     result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe")
     segments = result["segments"]
+    
+    # 🧼 重複フィルターを適用
+    segments = remove_redundant_segments(segments)
 
     if not any(seg["text"].strip() for seg in segments):
         clip_path.unlink(missing_ok=True)
