@@ -33,7 +33,7 @@ class Clip:
 
 def load_api_key_from_file() -> str:
     # 現在のスクリプトの一つ上のディレクトリの assets/openai_key.txt を参照
-    key_path = Path(__file__).resolve().parent.parent / "assets" / "openai_key.txt"
+    key_path = Path(__file__).resolve().parent.parent / "assets" / "sec" / "openai_key.txt"
     with open(key_path, "r", encoding="utf-8") as f:
         return f.readline().strip()
 
@@ -395,24 +395,65 @@ def main():
     def download_video():
         if not update_paths_from_url():
             return
-        if os.path.exists(state["video_file"]):
-            messagebox.showinfo("情報", "動画ファイルは既に存在します。")
+
+        # 🔹 保存先をエクスプローラーで選択（.mp4 指定）
+        initial_name = f"{state['safe_title']}.mp4"
+        save_path = filedialog.asksaveasfilename(
+            title="保存先を選択してください",
+            defaultextension=".mp4",
+            filetypes=[("MP4 files", "*.mp4")],
+            initialfile=initial_name
+        )
+
+        if not save_path:
+            print("⚠️ 保存がキャンセルされました。")
             return
-    
-        # 解像度指定に基づくformat条件を構築
+
+        # 🔸 state["video_file"] にセット（後続処理のため）
+        state["video_file"] = save_path
+
+        # 🔹 ユーザー指定解像度
         resolution = settings.get("resolution", "1920x1080")
-        width, height = resolution.lower().split("x")
-    
-        format_selector = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]"
-    
+        width_str, height_str = resolution.lower().split("x")
+        width = int(width_str)
+        height = int(height_str)
+
+        # 🔸 yt-dlpでフルHD（137+140）を一時ファイルにダウンロード
+        fullhd_selector = "137+140"
+
         subprocess.run([
             "yt-dlp",
-            "-f", format_selector,
+            "--force-overwrites",  # ← 🔥 強制上書き
+            "-f", fullhd_selector,
             "--merge-output-format", "mp4",
-            "-o", state["video_file"],
+            "-o", save_path,
             state["video_url"]
-        ])
-        messagebox.showinfo("完了", f"動画ダウンロード完了！（解像度: {resolution}）")
+        ], check=True)
+
+        # 🔹 フルHDならそのまま完了
+        if resolution == "1920x1080":
+            messagebox.showinfo("完了", f"動画ダウンロード完了！（{resolution}）")
+            return
+
+        # 🔹 それ以外 → トリミング＋リサイズ
+        crop_width = int(720 * width / 1080)
+        crop_x = (1920 - crop_width) // 2
+        vf_filter = f"crop={crop_width}:1080:{crop_x}:0,scale={width}:{height}"
+
+        output_temp_path = Path(save_path).with_stem(Path(save_path).stem + "_converted")
+
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-i", save_path,
+            "-vf", vf_filter,
+            "-c:v", "h264_nvenc",
+            "-c:a", "copy",
+            str(output_temp_path)
+        ], check=True)
+
+        os.replace(output_temp_path, save_path)
+
+        messagebox.showinfo("完了", f"動画ダウンロードと変換完了！（{resolution}）")
 
     def analyze_and_plot():
         def analyze():
