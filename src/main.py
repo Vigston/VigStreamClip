@@ -21,9 +21,23 @@ plt.rcParams["font.family"] = "Yu Gothic"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SEGMENT_DIR = BASE_DIR / "output" / "segments"
-OUTPUT_BASE_DIR = BASE_DIR / "clip_output"
+OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
 MIN_DURATION = 60
 MAX_DURATION = 180
+
+# # 実測ベースに合わせてチューニング
+FONT_CHAR_WIDTH = {
+    "Yu Gothic": 24,
+    "Noto Sans JP": 22,
+    "MS Gothic": 20,
+}
+
+# 設定データ
+settings = {
+    "resolution": "1920x1080",
+    "font": "Yu Gothic"
+}
+
 whisper_model = whisper.load_model("large-v3", device="cuda")
 
 @dataclass
@@ -204,6 +218,43 @@ def escape_ffmpeg_path(path: Path) -> str:
         return f"{drive}\\:/{rest}"
     return path
 
+# フォント名から max_width を推定する関数
+def estimate_max_width(resolution: str, font_name: str) -> int:
+    screen_width = int(resolution.split("x")[0])
+    usable_width = screen_width * 0.7
+    font_width = FONT_CHAR_WIDTH.get(font_name, 24)
+    print(f"[estimate_max_width]usable_width:{usable_width}")
+    print(f"[estimate_max_width]font_width:{font_width}")
+    return max(10, int(usable_width / font_width))
+
+# 自動改行処理
+def wrap_text_for_subtitles(text: str, max_width: int) -> str:
+    lines = []
+    current = ""
+    for ch in text:
+        current += ch
+        if len(current) >= max_width:
+            lines.append(current)
+            current = ""
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+# 動画解像度取得(reuturn str("{width}x{height})")
+def get_video_resolution(video_path: Path) -> str:
+    result = subprocess.run([
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "json", str(video_path)
+    ], capture_output=True, text=True, check=True)
+
+    info = json.loads(result.stdout)
+    width = info["streams"][0]["width"]
+    height = info["streams"][0]["height"]
+    return f"{width}x{height}"
+
+# クリップ動画の作成、出力
 def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     clip_path = output_dir / f"clip_{index}.mp4"
     srt_path = output_dir / f"clip_{index}.srt"
@@ -245,13 +296,24 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     # ④ ChatGPTで誤字脱字のみ修正
     corrected = call_gpt_proofread_segments(segments)
 
+    # 字幕用 max_width を設定に応じて計算
+    font_name = settings.get("font", "Yu Gothic")
+    resolution = get_video_resolution(clip_path)
+    max_width = estimate_max_width(resolution, font_name)
+    
+    print(f"[export_clip]max_width:{max_width}")
+
     # ⑤ 校閲済み字幕を srt に保存（タイミングはWhisper通り）
     with open(srt_path, "w", encoding="utf-8") as f:
         for i, corr in enumerate(corrected):
             seg = segments[corr["index"]]
             start = format_timestamp(seg["start"])
             end = format_timestamp(seg["end"])
-            f.write(f"{i+1}\n{start} --> {end}\n{corr['text']}\n\n")
+
+            # 🔽 ここで自動改行を適用
+            wrapped_text = wrap_text_for_subtitles(corr["text"], max_width)
+
+            f.write(f"{i+1}\n{start} --> {end}\n{wrapped_text}\n\n")
 
     # ⑥ 差分ログを出力
     with open(diff_path, "w", encoding="utf-8") as f:
@@ -267,9 +329,15 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     if structure:
         with open(structure_path, "w", encoding="utf-8") as f:
             json.dump(structure, f, ensure_ascii=False, indent=2)
+    
+    font_name = settings.get("font", "Yu Gothic")
+    font_size = FONT_CHAR_WIDTH.get(font_name, 24)
 
     # ⑧ 字幕を焼き込み
-    subtitle_filter = f"subtitles='{escape_ffmpeg_path(srt_path)}'"
+    subtitle_filter = (
+        f"subtitles='{escape_ffmpeg_path(srt_path)}:force_style=FontName={font_name},"
+        f"FontSize={font_size},Outline=1,Shadow=1,MarginV=40,Alignment=2'"
+    )
     subprocess.run([
         "ffmpeg", "-y", "-i", str(clip_path),
         "-vf", subtitle_filter,
@@ -286,6 +354,53 @@ def normalize_youtube_url(url: str) -> str:
     new_query = urllib.parse.urlencode(query, doseq=True)
     return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
+# 解像度設定メニュー表示
+def open_resolution_window(root: tk.Tk):
+    res_win = tk.Toplevel(root)
+    res_win.title("解像度の設定")
+    res_win.geometry("300x120")
+
+    tk.Label(res_win, text="解像度を設定:").pack(pady=5)
+    current_res = settings.get("resolution", "1920x1080")
+    default_width, default_height = current_res.lower().split("x")
+
+    entry_frame = tk.Frame(res_win)
+    entry_frame.pack()
+    width_var = tk.StringVar(value=default_width)
+    height_var = tk.StringVar(value=default_height)
+    tk.Entry(entry_frame, textvariable=width_var, width=6).pack(side=tk.LEFT)
+    tk.Label(entry_frame, text=" x ").pack(side=tk.LEFT)
+    tk.Entry(entry_frame, textvariable=height_var, width=6).pack(side=tk.LEFT)
+
+    def save_resolution():
+        w, h = width_var.get().strip(), height_var.get().strip()
+        if not w.isdigit() or not h.isdigit():
+            messagebox.showerror("エラー", "横幅・縦幅には数値を入力してください。")
+            return
+        settings["resolution"] = f"{w}x{h}"
+        messagebox.showinfo("保存完了", f"解像度: {settings['resolution']}")
+        res_win.destroy()
+
+    tk.Button(res_win, text="保存", command=save_resolution).pack(pady=10)
+
+# 字幕フォント設定メニュー表示
+def open_subtitlesfont_window(root: tk.Tk):
+    font_win = tk.Toplevel(root)
+    font_win.title("字幕フォントの設定")
+    font_win.geometry("300x120")
+
+    tk.Label(font_win, text="字幕フォントを選択:").pack(pady=5)
+    font_var = tk.StringVar(value=settings.get("font", "Yu Gothic"))
+    font_options = list(FONT_CHAR_WIDTH.keys())
+    tk.OptionMenu(font_win, font_var, *font_options).pack()
+
+    def save_subtitlesfont():
+        settings["font"] = font_var.get()
+        messagebox.showinfo("保存完了", f"字幕フォント: {settings['font']}")
+        font_win.destroy()
+
+    tk.Button(font_win, text="保存", command=save_subtitlesfont).pack(pady=10)
+
 def main():
     # 使用時にセット
     openai.api_key = load_api_key_from_file()
@@ -293,54 +408,15 @@ def main():
     root = tk.Tk()
     root.title("YouTubeチャット＆動画処理ツール")
     
-    # 設定データ
-    settings = {"resolution": "1920x1080"}
     # メニューバー追加
     menubar = tk.Menu(root)
     root.config(menu=menubar)
     
-    def open_settings_window():
-        settings_window = tk.Toplevel(root)
-        settings_window.title("設定")
-        settings_window.geometry("300x120")
-
-        tk.Label(settings_window, text="解像度を設定:").pack(pady=10)
-
-        # 現在の設定から横・縦を分離
-        current_res = settings.get("resolution", "1920x1080")
-        default_width, default_height = current_res.lower().split("x")
-
-        # 横幅・縦幅のエントリボックス
-        entry_frame = tk.Frame(settings_window)
-        entry_frame.pack()
-
-        width_var = tk.StringVar(value=default_width)
-        height_var = tk.StringVar(value=default_height)
-
-        width_entry = tk.Entry(entry_frame, textvariable=width_var, width=6)
-        width_entry.pack(side=tk.LEFT)
-
-        tk.Label(entry_frame, text=" x ").pack(side=tk.LEFT)
-
-        height_entry = tk.Entry(entry_frame, textvariable=height_var, width=6)
-        height_entry.pack(side=tk.LEFT)
-
-        def save_settings():
-            w = width_var.get().strip()
-            h = height_var.get().strip()
-            if not w.isdigit() or not h.isdigit():
-                messagebox.showerror("エラー", "横幅・縦幅には数値を入力してください。")
-                return
-            settings["resolution"] = f"{w}x{h}"
-            messagebox.showinfo("設定保存", f"解像度を {settings['resolution']} に設定しました")
-            settings_window.destroy()
-
-        tk.Button(settings_window, text="保存", command=save_settings).pack(pady=10)
-    
     # メニュー項目
     setting_menu = tk.Menu(menubar, tearoff=0)
     menubar.add_cascade(label="設定", menu=setting_menu)
-    setting_menu.add_command(label="解像度", command=open_settings_window)
+    setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(root))
+    setting_menu.add_command(label="字幕フォント", command=lambda: open_subtitlesfont_window(root))
     
     frame = tk.Frame(root, padx=20, pady=20)
     frame.pack()
@@ -455,7 +531,7 @@ def main():
 
         messagebox.showinfo("完了", f"動画ダウンロードと変換完了！（{resolution}）")
 
-    def analyze_and_plot():
+    def analyze_and_plot() -> threading.Thread:
         def analyze():
             if not update_paths_from_url():
                 return
@@ -503,15 +579,28 @@ def main():
             plt.tight_layout()
             plt.show()
 
-        threading.Thread(target=analyze).start()
+        t = threading.Thread(target=analyze)
+        t.start()
+        return t  # スレッドオブジェクトを返す
 
     def generate_segments():
         if not state["valleys"] or not state["peaks"]:
-            messagebox.showwarning("警告", "分析が先に必要です。")
+            print("分析を行っていなかったので分析処理を実行します。")
+            thread = analyze_and_plot()
+            thread.join() # 終わるまで待機
+
+        # 🎥 元動画ファイルを選択
+        video_file = filedialog.askopenfilename(
+            title="セグメント生成に使う動画ファイルを選択",
+            filetypes=[("MP4 Files", "*.mp4")]
+        )
+        if not video_file:
+            print("⚠️ 動画ファイルが選択されませんでした。処理を中止します。")
             return
-        if not os.path.exists(state["video_file"]):
-            messagebox.showwarning("警告", "動画ファイルが見つかりません。")
-            return
+
+        # 💾 保存先は固定
+        SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
+
         BUFFER = 300
         segment_count = 1
         for v_sec in state["valleys"]:
@@ -522,15 +611,17 @@ def main():
             start = max(0, v_sec - BUFFER)
             end = p_sec + BUFFER
             duration = end - start
+
             segment_path = SEGMENT_DIR / f"segment_{segment_count:02}.mp4"
             subprocess.run([
                 "ffmpeg", "-ss", str(timedelta(seconds=start)),
-                "-i", state["video_file"],
+                "-i", video_file,
                 "-t", str(timedelta(seconds=duration)),
                 "-c", "copy", str(segment_path)
             ])
             segment_count += 1
-        messagebox.showinfo("完了", "セグメント生成が完了しました！")
+
+        messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {SEGMENT_DIR}")
 
     def generate_clips_from_folder():
         folder = filedialog.askdirectory(title="セグメントフォルダを選択")
