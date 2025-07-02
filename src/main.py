@@ -51,13 +51,16 @@ settings = {
     "Alignment": 2
 }
 
+# whisperの使用モデルを設定
 whisper_model = whisper.load_model("large-v3", device="cuda")
 
+# クリップ用データ
 @dataclass
 class Clip:
     start_time: float
     end_time: float
 
+# ChatGptのAPIキーを読み込み
 def load_api_key_from_file() -> str:
     # 現在のスクリプトの一つ上のディレクトリの assets/openai_key.txt を参照
     key_path = Path(__file__).resolve().parent.parent / "assets" / "sec" / "openai_key.txt"
