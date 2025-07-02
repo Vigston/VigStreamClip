@@ -27,32 +27,28 @@ OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
-# 字幕スタイル設定用デフォルト
-subtitle_style_settings = {
+# 使用可能なフォント一覧
+AVAILABLE_FONTS = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"]
+
+# フォントごとの横幅係数（1pt あたり何 px を占有するか）
+FONT_WIDTH_RATIO = {
+    "Yu Gothic": 3.94,
+}
+
+# 設定データ
+settings = {
+    # 解像度などの一般設定
+    "Resolution": "1920x1080",
+    
+    # 字幕スタイル
     "Font": "Yu Gothic",
-    "FontSize": 26,
+    "FontSize": 24,
     "Outline": 2,
     "OutlineColour": "&H00000000",
     "Shadow": 1,
     "PrimaryColour": "&H00FFFFFF",
     "MarginV": 40,
     "Alignment": 2
-}
-
-# 使用可能なフォント一覧
-AVAILABLE_FONTS = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"]
-
-# # 実測ベースに合わせてチューニング
-FONT_CHAR_WIDTH = {
-    "Yu Gothic": 24,
-    "Noto Sans JP": 22,
-    "MS Gothic": 20,
-}
-
-# 設定データ
-settings = {
-    "resolution": "1920x1080",
-    "font": "Yu Gothic"
 }
 
 whisper_model = whisper.load_model("large-v3", device="cuda")
@@ -236,13 +232,14 @@ def escape_ffmpeg_path(path: Path) -> str:
     return path
 
 # フォント名から max_width を推定する関数
-def estimate_max_width(resolution: str, font_name: str) -> int:
+def estimate_max_width(resolution: str, font_name: str, font_size: int) -> int:
     screen_width = int(resolution.split("x")[0])
-    usable_width = screen_width * 0.7
-    font_width = FONT_CHAR_WIDTH.get(font_name, 24)
-    print(f"[estimate_max_width]usable_width:{usable_width}")
-    print(f"[estimate_max_width]font_width:{font_width}")
-    return max(10, int(usable_width / font_width))
+    usable_width = screen_width * 0.7  # 実際に字幕が収まる幅
+    ratio = FONT_WIDTH_RATIO.get(font_name, 4)
+    font_width = font_size * ratio
+    max_chars = int(usable_width / font_width)
+    print(f"[estimate_max_width] usable_width: {usable_width}, font_width: {font_width:.2f}, max_width: {max_chars}")
+    return max_chars
 
 # 自動改行処理
 def wrap_text_for_subtitles(text: str, max_width: int) -> str:
@@ -295,6 +292,11 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe")
     segments = result["segments"]
     
+    # 🧼 Whisper結果が空なら中断
+    if not segments:
+        print(f"⚠️ Whisperのセグメントが空です: {clip_path.name}")
+        return
+    
     # 🧼 重複フィルターを適用
     segments = remove_redundant_segments(segments)
 
@@ -314,9 +316,10 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     corrected = call_gpt_proofread_segments(segments)
 
     # 字幕用 max_width を設定に応じて計算
-    font_name = settings.get("font", "Yu Gothic")
+    font_name = settings.get("Font", "Yu Gothic")
+    font_size = settings.get("FontSize", 24)
     resolution = get_video_resolution(clip_path)
-    max_width = estimate_max_width(resolution, font_name)
+    max_width = estimate_max_width(resolution, font_name, font_size)
     
     print(f"[export_clip]max_width:{max_width}")
 
@@ -347,11 +350,11 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
         with open(structure_path, "w", encoding="utf-8") as f:
             json.dump(structure, f, ensure_ascii=False, indent=2)
     
-    font_name = settings.get("font", "Yu Gothic")
-    font_size = FONT_CHAR_WIDTH.get(font_name, 24)
+    font_name = settings.get("Font", "Yu Gothic")
+    font_size = settings.get("Font", 24)
 
     # ⑧ 字幕を焼き込み
-    subtitle_filter = generate_subtitle_filter(str(srt_path))
+    subtitle_filter = generate_subtitle_filter(escape_ffmpeg_path(srt_path))
     
     subprocess.run([
         "ffmpeg", "-y", "-i", str(clip_path),
@@ -376,7 +379,7 @@ def open_resolution_window(root: tk.Tk):
     res_win.geometry("300x120")
 
     tk.Label(res_win, text="解像度を設定:").pack(pady=5)
-    current_res = settings.get("resolution", "1920x1080")
+    current_res = settings.get("Resolution", "1920x1080")
     default_width, default_height = current_res.lower().split("x")
 
     entry_frame = tk.Frame(res_win)
@@ -392,8 +395,8 @@ def open_resolution_window(root: tk.Tk):
         if not w.isdigit() or not h.isdigit():
             messagebox.showerror("エラー", "横幅・縦幅には数値を入力してください。")
             return
-        settings["resolution"] = f"{w}x{h}"
-        messagebox.showinfo("保存完了", f"解像度: {settings['resolution']}")
+        settings["Resolution"] = f"{w}x{h}"
+        messagebox.showinfo("保存完了", f"解像度: {settings['Resolution']}")
         res_win.destroy()
 
     tk.Button(res_win, text="保存", command=save_resolution).pack(pady=10)
@@ -427,7 +430,7 @@ def open_subtitle_style_window(root):
         frame = Frame(style_win)
         frame.pack(pady=4, anchor=W)
         Label(frame, text=label, width=15, anchor=W).pack(side=LEFT)
-        var = StringVar(value=str(subtitle_style_settings[key]))
+        var = StringVar(value=str(settings[key]))
         entry = Entry(frame, textvariable=var, width=20)
         entry.pack(side=LEFT)
         entries[key] = var
@@ -436,7 +439,7 @@ def open_subtitle_style_window(root):
     font_frame = Frame(style_win)
     font_frame.pack(pady=4, anchor=W)
     Label(font_frame, text="フォント", width=15, anchor=W).pack(side=LEFT)
-    font_var = StringVar(value=subtitle_style_settings["Font"])
+    font_var = StringVar(value=settings["Font"])
     OptionMenu(font_frame, font_var, *AVAILABLE_FONTS).pack(side=LEFT)
 
     add_entry("フォントサイズ", "FontSize")
@@ -448,16 +451,16 @@ def open_subtitle_style_window(root):
     add_entry("位置 (1~9)", "Alignment")
 
     def save_style():
-        subtitle_style_settings["Font"] = font_var.get()
+        settings["Font"] = font_var.get()
         for key, var in entries.items():
             val = var.get().strip()
             if key in ["FontSize", "Outline", "Shadow", "MarginV", "Alignment"]:
                 if not val.isdigit():
                     messagebox.showerror("エラー", f"{key} は数値である必要があります。")
                     return
-                subtitle_style_settings[key] = int(val)
+                settings[key] = int(val)
             else:
-                subtitle_style_settings[key] = val
+                settings[key] = val
 
         messagebox.showinfo("保存完了", "字幕スタイルが保存されました。")
         style_win.destroy()
@@ -466,7 +469,7 @@ def open_subtitle_style_window(root):
 
 # 字幕生成のフィルター設定を生成
 def generate_subtitle_filter(srt_path: str) -> str:
-    s = subtitle_style_settings
+    s = settings
     style_str = (
         f"FontName={s['Font']},"
         f"FontSize={s['FontSize']},"
@@ -567,7 +570,7 @@ def main():
         state["video_file"] = save_path
 
         # 🔹 ユーザー指定解像度
-        resolution = settings.get("resolution", "1920x1080")
+        resolution = settings.get("Resolution", "1920x1080")
         width_str, height_str = resolution.lower().split("x")
         width = int(width_str)
         height = int(height_str)
