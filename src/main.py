@@ -16,6 +16,8 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from datetime import timedelta
 import openai
+from tkinter import *
+from tkinter import messagebox
 
 plt.rcParams["font.family"] = "Yu Gothic"
 
@@ -24,6 +26,21 @@ SEGMENT_DIR = BASE_DIR / "output" / "segments"
 OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
 MIN_DURATION = 60
 MAX_DURATION = 180
+
+# 字幕スタイル設定用デフォルト
+subtitle_style_settings = {
+    "Font": "Yu Gothic",
+    "FontSize": 26,
+    "Outline": 2,
+    "OutlineColour": "&H00000000",
+    "Shadow": 1,
+    "PrimaryColour": "&H00FFFFFF",
+    "MarginV": 40,
+    "Alignment": 2
+}
+
+# 使用可能なフォント一覧
+AVAILABLE_FONTS = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"]
 
 # # 実測ベースに合わせてチューニング
 FONT_CHAR_WIDTH = {
@@ -334,10 +351,8 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     font_size = FONT_CHAR_WIDTH.get(font_name, 24)
 
     # ⑧ 字幕を焼き込み
-    subtitle_filter = (
-        f"subtitles='{escape_ffmpeg_path(srt_path)}:force_style=FontName={font_name},"
-        f"FontSize={font_size},Outline=1,Shadow=1,MarginV=40,Alignment=2'"
-    )
+    subtitle_filter = generate_subtitle_filter(str(srt_path))
+    
     subprocess.run([
         "ffmpeg", "-y", "-i", str(clip_path),
         "-vf", subtitle_filter,
@@ -383,23 +398,86 @@ def open_resolution_window(root: tk.Tk):
 
     tk.Button(res_win, text="保存", command=save_resolution).pack(pady=10)
 
-# 字幕フォント設定メニュー表示
-def open_subtitlesfont_window(root: tk.Tk):
-    font_win = tk.Toplevel(root)
-    font_win.title("字幕フォントの設定")
-    font_win.geometry("300x120")
+# 字幕設定ウィンドウ表示
+def open_subtitle_style_window(root):
+    def show_help():
+        help_win = Toplevel(root)
+        help_win.title("字幕スタイルの説明")
+        help_text = Text(help_win, wrap="word", width=80, height=30)
+        help_text.pack(padx=10, pady=10)
 
-    tk.Label(font_win, text="字幕フォントを選択:").pack(pady=5)
-    font_var = tk.StringVar(value=settings.get("font", "Yu Gothic"))
-    font_options = list(FONT_CHAR_WIDTH.keys())
-    tk.OptionMenu(font_win, font_var, *font_options).pack()
+        try:
+            with open(os.path.join(os.path.dirname(__file__), '..', 'res', 'subtitle_style_help.txt'), encoding="utf-8") as f:
+                help_content = f.read()
+        except Exception as e:
+            help_content = f"[エラー] 説明ファイルの読み込みに失敗しました:{e}"
 
-    def save_subtitlesfont():
-        settings["font"] = font_var.get()
-        messagebox.showinfo("保存完了", f"字幕フォント: {settings['font']}")
-        font_win.destroy()
+        help_text.insert("1.0", help_content)
+        help_text.configure(state="disabled")
+        Button(help_win, text="閉じる", command=help_win.destroy).pack(pady=5)
 
-    tk.Button(font_win, text="保存", command=save_subtitlesfont).pack(pady=10)
+    style_win = Toplevel(root)
+    style_win.title("字幕スタイルの設定")
+    Button(style_win, text="❓ 説明", command=show_help).place(relx=1.0, x=-10, y=10, anchor='ne')
+    style_win.geometry("400x420")
+
+    entries = {}
+
+    def add_entry(label, key):
+        frame = Frame(style_win)
+        frame.pack(pady=4, anchor=W)
+        Label(frame, text=label, width=15, anchor=W).pack(side=LEFT)
+        var = StringVar(value=str(subtitle_style_settings[key]))
+        entry = Entry(frame, textvariable=var, width=20)
+        entry.pack(side=LEFT)
+        entries[key] = var
+
+    # フォント選択（OptionMenu）
+    font_frame = Frame(style_win)
+    font_frame.pack(pady=4, anchor=W)
+    Label(font_frame, text="フォント", width=15, anchor=W).pack(side=LEFT)
+    font_var = StringVar(value=subtitle_style_settings["Font"])
+    OptionMenu(font_frame, font_var, *AVAILABLE_FONTS).pack(side=LEFT)
+
+    add_entry("フォントサイズ", "FontSize")
+    add_entry("文字色", "PrimaryColour")
+    add_entry("縁取りサイズ", "Outline")
+    add_entry("縁取り色", "OutlineColour")
+    add_entry("影のサイズ", "Shadow")
+    add_entry("下マージン", "MarginV")
+    add_entry("位置 (1~9)", "Alignment")
+
+    def save_style():
+        subtitle_style_settings["Font"] = font_var.get()
+        for key, var in entries.items():
+            val = var.get().strip()
+            if key in ["FontSize", "Outline", "Shadow", "MarginV", "Alignment"]:
+                if not val.isdigit():
+                    messagebox.showerror("エラー", f"{key} は数値である必要があります。")
+                    return
+                subtitle_style_settings[key] = int(val)
+            else:
+                subtitle_style_settings[key] = val
+
+        messagebox.showinfo("保存完了", "字幕スタイルが保存されました。")
+        style_win.destroy()
+
+    Button(style_win, text="保存", command=save_style).pack(pady=10)
+
+# 字幕生成のフィルター設定を生成
+def generate_subtitle_filter(srt_path: str) -> str:
+    s = subtitle_style_settings
+    style_str = (
+        f"FontName={s['Font']},"
+        f"FontSize={s['FontSize']},"
+        f"PrimaryColour={s['PrimaryColour']},"
+        f"Outline={s['Outline']},"
+        f"OutlineColour={s['OutlineColour']},"
+        f"Shadow={s['Shadow']},"
+        f"MarginV={s['MarginV']},"
+        f"Alignment={s['Alignment']}"
+    )
+    return f"subtitles='{srt_path}:force_style={style_str}'"
 
 def main():
     # 使用時にセット
@@ -416,7 +494,7 @@ def main():
     setting_menu = tk.Menu(menubar, tearoff=0)
     menubar.add_cascade(label="設定", menu=setting_menu)
     setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(root))
-    setting_menu.add_command(label="字幕フォント", command=lambda: open_subtitlesfont_window(root))
+    setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window(root))
     
     frame = tk.Frame(root, padx=20, pady=20)
     frame.pack()
