@@ -18,15 +18,20 @@ from datetime import timedelta
 import openai
 from tkinter import *
 from tkinter import messagebox
+import shutil
+from fontTools.ttLib import TTFont  # ← fontTools を使用
 
 plt.rcParams["font.family"] = "Yu Gothic"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+FONT_DIR = BASE_DIR / "fonts"
 SEGMENT_DIR = BASE_DIR / "output" / "segments"
 OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
+# カスタムフォントパス
+CUSTOM_FONT_PATHS = {}
 # 使用可能なフォント一覧
 AVAILABLE_FONTS = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"]
 
@@ -227,12 +232,46 @@ def remove_redundant_segments(segments: List[dict], max_repeat: int = 2) -> List
 
     return filtered_segments
 
+# ffmpeg フィルタ用に Windowsパスをエスケープ（\ → /, : → \:）
 def escape_ffmpeg_path(path: Path) -> str:
-    path = path.as_posix()
-    if ":" in path:
-        drive, rest = path.split(":/", 1)
-        return f"{drive}\\:/{rest}"
-    return path
+    """
+    Windowsパスをffmpegのsubtitlesフィルタ用に変換：
+    - \ → /
+    - 最初の : → \:
+    """
+    s = str(path.resolve()).replace("\\", "/")
+    if ":" in s:
+        s = s.replace(":", "\\:", 1)
+    return s
+
+# スペースをバックスラッシュでエスケープ
+def escape_font_name(name: str) -> str:
+    return name.replace(" ", "\\ ")
+
+#############
+###フォント###
+#############
+# カスタムフォントデータのファイルパスを読み込み
+def scan_custom_fonts() -> dict:
+    """
+    fonts/ 以下のすべてのサブフォルダから .ttf を探し、
+    {フォント名: フルパス} を返す
+    """
+    FONT_DIR.mkdir(exist_ok=True)
+    font_map = {}
+
+    for font_path in FONT_DIR.rglob("*.ttf"):  # ← 再帰探索に変更！
+        try:
+            tt = TTFont(font_path)
+            for record in tt["name"].names:
+                if record.nameID == 1 and record.platformID == 3:
+                    name = record.string.decode("utf-16-be").strip()
+                    font_map[name] = str(font_path)
+                    break
+        except Exception as e:
+            print(f"❌ フォント取得失敗: {font_path.name} ({e})")
+
+    return font_map
 
 # フォント名から max_width を推定する関数
 def estimate_max_width(resolution: str, font_name: str, font_size: int) -> int:
@@ -357,7 +396,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     font_size = settings.get("Font", 24)
 
     # ⑧ 字幕を焼き込み
-    subtitle_filter = generate_subtitle_filter(escape_ffmpeg_path(srt_path))
+    subtitle_filter = generate_subtitle_filter(srt_path)
     
     subprocess.run([
         "ffmpeg", "-y", "-i", str(clip_path),
@@ -452,6 +491,30 @@ def open_subtitle_style_window(root):
     add_entry("影のサイズ", "Shadow")
     add_entry("下マージン", "MarginV")
     add_entry("位置 (1~9)", "Alignment")
+    
+    def choose_custom_font():
+        custom_fonts = list(CUSTOM_FONT_PATHS.keys())
+        if not custom_fonts:
+            messagebox.showwarning("フォントなし", "fonts/ フォルダにフォントが見つかりませんでした。")
+            return
+
+        choose_win = Toplevel(root)
+        choose_win.title("カスタムフォントを選択")
+        choose_win.geometry("300x200")
+
+        listbox = Listbox(choose_win, selectmode=SINGLE)
+        for font_name in custom_fonts:
+            listbox.insert(END, font_name)
+        listbox.pack(padx=10, pady=10, fill=BOTH, expand=True)
+
+        def select_font():
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("未選択", "フォントを選択してください。")
+                return
+            selected = listbox.get(selection[0])
+            font_var.set(selected)
+            choose_win.destroy()
 
     def save_style():
         settings["Font"] = font_var.get()
@@ -468,13 +531,15 @@ def open_subtitle_style_window(root):
         messagebox.showinfo("保存完了", "字幕スタイルが保存されました。")
         style_win.destroy()
 
+    Button(style_win, text="カスタムフォント", command=choose_custom_font).pack(pady=6)
     Button(style_win, text="保存", command=save_style).pack(pady=10)
 
 # 字幕生成のフィルター設定を生成
-def generate_subtitle_filter(srt_path: str) -> str:
+def generate_subtitle_filter(srt_path: Path) -> str:
     s = settings
+    font_name = s["Font"]
     style_str = (
-        f"FontName={s['Font']},"
+        f"FontName={escape_font_name(font_name)},"
         f"FontSize={s['FontSize']},"
         f"PrimaryColour={s['PrimaryColour']},"
         f"Outline={s['Outline']},"
@@ -483,11 +548,23 @@ def generate_subtitle_filter(srt_path: str) -> str:
         f"MarginV={s['MarginV']},"
         f"Alignment={s['Alignment']}"
     )
-    return f"subtitles='{srt_path}:force_style={style_str}'"
+    
+    srt_path_escaped = escape_ffmpeg_path(srt_path)
+    font_path = CUSTOM_FONT_PATHS.get(font_name)
+    if font_path:
+        fontsdir_escaped = escape_ffmpeg_path(Path(font_path).parent)
+        return f"subtitles='{srt_path_escaped}:fontsdir={fontsdir_escaped}:force_style={style_str}'"
+    else:
+        return f"subtitles='{srt_path_escaped}:force_style={style_str}'"
 
 def main():
+    global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
+    
     # 使用時にセット
     openai.api_key = load_api_key_from_file()
+    
+    CUSTOM_FONT_PATHS = scan_custom_fonts()
+    AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     
     root = tk.Tk()
     root.title("YouTubeチャット＆動画処理ツール")
