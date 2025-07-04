@@ -185,3 +185,5 @@ cython_debug/
 /output
 /clip_output
 /assets/sec
+/pybuild
+/release

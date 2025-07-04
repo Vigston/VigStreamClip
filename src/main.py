@@ -350,11 +350,22 @@ def convert_color_tags_to_ass(text: str) -> str:
     converted = re.sub(r"\{(.*?)\}", replacer, text)
 
     # 既に色タグが含まれていなければ settings["PrimaryColor"] を追加
-    if r"\c&H" not in converted:
-        color_code = settings.get("PrimaryColor", "&H00FFFFFF&")
-        converted = f"{{\\c{color_code}}}" + converted
+    #if r"\c&H" not in converted:
+    #    color_code = settings.get("PrimaryColor", "&H00FFFFFF&")
+    #    converted = f"{{\\c{color_code}}}" + converted
 
     return converted
+
+# 動画に字幕を差し込んで生成
+def generate_subtitles_to_video(input_video: Path, input_srt: Path, output_video: Path):
+    subtitle_filter = generate_subtitle_filter(input_srt)
+    subprocess.run([
+        "ffmpeg", "-y", "-i", str(input_video),
+        "-vf", subtitle_filter,
+        "-c:v", "h264_nvenc",
+        "-c:a", "copy",
+        str(output_video)
+    ], check=True)
 
 # クリップ動画の作成、出力
 def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
@@ -443,15 +454,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     font_size = settings.get("Font", 24)
 
     # ⑧ 字幕を焼き込み
-    subtitle_filter = generate_subtitle_filter(srt_path)
-    
-    subprocess.run([
-        "ffmpeg", "-y", "-i", str(clip_path),
-        "-vf", subtitle_filter,
-        "-c:v", "h264_nvenc",
-        "-c:a", "copy",
-        str(subtitled_path)
-    ], check=True)
+    generate_subtitles_to_video(clip_path, srt_path, subtitled_path)
 
 
 def normalize_youtube_url(url: str) -> str:
@@ -581,6 +584,35 @@ def open_subtitle_style_window(root):
     Button(style_win, text="カスタムフォント", command=choose_custom_font).pack(pady=6)
     Button(style_win, text="保存", command=save_style).pack(pady=10)
 
+# 字幕の焼き直し
+def clip_reburn_gui():
+    # ユーザーにMP4とSRTを選ばせる
+    mp4_path = filedialog.askopenfilename(
+        title="焼き直すMP4ファイルを選択",
+        filetypes=[("MP4ファイル", "*.mp4")]
+    )
+    if not mp4_path:
+        print("❌ MP4ファイルが選択されませんでした")
+        return
+
+    srt_path = filedialog.askopenfilename(
+        title="対応するSRT字幕ファイルを選択",
+        filetypes=[("字幕ファイル", "*.srt")]
+    )
+    if not srt_path:
+        print("❌ SRTファイルが選択されませんでした")
+        return
+
+    mp4 = Path(mp4_path)
+    srt = Path(srt_path)
+    out = mp4.with_name(mp4.stem + "_subtitled.mp4")
+
+    try:
+        generate_subtitles_to_video(mp4, srt, out)
+        messagebox.showinfo("完了", f"字幕の焼き直しが完了しました！\n出力: {out.name}")
+    except Exception as e:
+        messagebox.showerror("エラー", f"字幕焼き直しに失敗しました:\n{e}")
+
 # 字幕生成のフィルター設定を生成
 def generate_subtitle_filter(srt_path: Path) -> str:
     s = settings
@@ -621,10 +653,16 @@ def main():
     root.config(menu=menubar)
     
     # メニュー項目
+    #####設定#####
     setting_menu = tk.Menu(menubar, tearoff=0)
     menubar.add_cascade(label="設定", menu=setting_menu)
     setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(root))
     setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window(root))
+    
+    #####出力#####
+    output_menu = tk.Menu(menubar, tearoff=0)
+    menubar.add_cascade(label="出力", menu=output_menu)
+    output_menu.add_command(label="クリップ焼き直し", command=lambda: threading.Thread(target=clip_reburn_gui).start())
     
     frame = tk.Frame(root, padx=20, pady=20)
     frame.pack()
