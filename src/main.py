@@ -27,6 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 FONT_DIR = BASE_DIR / "fonts"
 SEGMENT_DIR = BASE_DIR / "output" / "segments"
 OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
+SETTINGS_FILE = BASE_DIR / "res" / "setting.txt"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
@@ -489,6 +490,7 @@ def open_resolution_window(root: tk.Tk):
             return
         settings["Resolution"] = f"{w}x{h}"
         messagebox.showinfo("保存完了", f"解像度: {settings['Resolution']}")
+        save_settings() # 設定保存
         res_win.destroy()
 
     tk.Button(res_win, text="保存", command=save_resolution).pack(pady=10)
@@ -579,6 +581,7 @@ def open_subtitle_style_window(root):
                 settings[key] = val
 
         messagebox.showinfo("保存完了", "字幕スタイルが保存されました。")
+        save_settings() # 設定保存
         style_win.destroy()
 
     Button(style_win, text="カスタムフォント", command=choose_custom_font).pack(pady=6)
@@ -636,11 +639,31 @@ def generate_subtitle_filter(srt_path: Path) -> str:
     else:
         return f"subtitles='{srt_path_escaped}:force_style={style_str}'"
 
+# 設定保存関数
+def save_settings():
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        print("✅ 設定を保存しました")
+    except Exception as e:
+        print(f"❌ 設定の保存に失敗: {e}")
+
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
     
     # 使用時にセット
     openai.api_key = load_api_key_from_file()
+    
+    # 設定情報読み込み
+    if SETTINGS_FILE.exists():
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                settings.update(loaded)
+                print("✅ 設定ファイルから読み込みました")
+        except Exception as e:
+            print(f"⚠️ 設定ファイルの読み込みに失敗: {e}")
     
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
@@ -658,6 +681,11 @@ def main():
     menubar.add_cascade(label="設定", menu=setting_menu)
     setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(root))
     setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window(root))
+    setting_menu.add_separator()
+    setting_menu.add_command(label="💾 設定を保存", command=lambda: (
+    save_settings(),
+    messagebox.showinfo("保存完了", "現在の設定を保存しました。")
+    ))
     
     #####出力#####
     output_menu = tk.Menu(menubar, tearoff=0)
