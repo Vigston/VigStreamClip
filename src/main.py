@@ -20,6 +20,9 @@ from tkinter import *
 from tkinter import messagebox
 import shutil
 from fontTools.ttLib import TTFont  # ← fontTools を使用
+import sys
+import logging
+from tkinter.scrolledtext import ScrolledText
 
 plt.rcParams["font.family"] = "Yu Gothic"
 
@@ -27,7 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 FONT_DIR = BASE_DIR / "fonts"
 SEGMENT_DIR = BASE_DIR / "output" / "segments"
 OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
-SETTINGS_FILE = BASE_DIR / "res" / "setting.txt"
+SETTINGS_FILE_DIR = BASE_DIR / "res" / "setting.txt"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
@@ -93,10 +96,20 @@ class Clip:
     start_time: float
     end_time: float
 
+# ログ
+
+# 直接ファイルを開く場合はこれを通して行う
+def resource_path(relative_path: str) -> Path:
+    """
+    PyInstaller で実行されているかを判定し、実行時の一時フォルダを解決
+    """
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / relative_path
+    return Path(__file__).resolve().parent / ".." / relative_path
+
 # ChatGptのAPIキーを読み込み
 def load_api_key_from_file() -> str:
-    # 現在のスクリプトの一つ上のディレクトリの assets/openai_key.txt を参照
-    key_path = Path(__file__).resolve().parent.parent / "assets" / "sec" / "openai_key.txt"
+    key_path = resource_path("assets/sec/openai_key.txt")
     with open(key_path, "r", encoding="utf-8") as f:
         return f.readline().strip()
 
@@ -504,7 +517,7 @@ def open_subtitle_style_window(root):
         help_text.pack(padx=10, pady=10)
 
         try:
-            with open(os.path.join(os.path.dirname(__file__), '..', 'res', 'subtitle_style_help.txt'), encoding="utf-8") as f:
+            with open(resource_path(os.path.join(os.path.dirname(__file__), '..', 'res', 'subtitle_style_help.txt')), encoding="utf-8") as f:
                 help_content = f.read()
         except Exception as e:
             help_content = f"[エラー] 説明ファイルの読み込みに失敗しました:{e}"
@@ -642,8 +655,8 @@ def generate_subtitle_filter(srt_path: Path) -> str:
 # 設定保存関数
 def save_settings():
     try:
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        SETTINGS_FILE_DIR.parent.mkdir(parents=True, exist_ok=True)
+        with open(resource_path(SETTINGS_FILE_DIR), "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
         print("✅ 設定を保存しました")
     except Exception as e:
@@ -656,9 +669,9 @@ def main():
     openai.api_key = load_api_key_from_file()
     
     # 設定情報読み込み
-    if SETTINGS_FILE.exists():
+    if SETTINGS_FILE_DIR.exists():
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            with open(SETTINGS_FILE_DIR, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 settings.update(loaded)
                 print("✅ 設定ファイルから読み込みました")
@@ -670,6 +683,50 @@ def main():
     
     root = tk.Tk()
     root.title("YouTubeチャット＆動画処理ツール")
+    
+    # ログ表示
+    log_frame = tk.Frame(root)
+    log_frame.pack(side="bottom", fill="x")
+
+    log_widget = ScrolledText(log_frame, state='disabled', height=10)
+    log_widget.pack(fill="both", expand=True)
+
+    # stdout/stderr を GUI にリダイレクト
+    class StdoutRedirector:
+        def __init__(self, text_widget):
+            self.text_widget = text_widget
+
+        def write(self, message):
+            self.text_widget.configure(state='normal')
+            self.text_widget.insert('end', message)
+            self.text_widget.configure(state='disabled')
+            self.text_widget.yview('end')
+
+        def flush(self):
+            pass
+
+    sys.stdout = StdoutRedirector(log_widget)
+    sys.stderr = StdoutRedirector(log_widget)
+
+    # logging を GUI にも出力
+    class TextHandler(logging.Handler):
+        def __init__(self, widget):
+            super().__init__()
+            self.widget = widget
+
+        def emit(self, record):
+            msg = self.format(record)
+            def append():
+                self.widget.configure(state='normal')
+                self.widget.insert('end', msg + '\n')
+                self.widget.configure(state='disabled')
+                self.widget.yview('end')
+            self.widget.after(0, append)
+
+    text_handler = TextHandler(log_widget)
+    text_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    logging.getLogger().addHandler(text_handler)
+    logging.getLogger().setLevel(logging.DEBUG)
     
     # メニューバー追加
     menubar = tk.Menu(root)
@@ -959,7 +1016,7 @@ def main():
     tk.Button(frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat).start()).pack(pady=5)
     tk.Button(frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video).start()).pack(pady=5)
     tk.Button(frame, text="📊 分析してグラフを表示", command=analyze_and_plot).pack(pady=5)
-    tk.Button(frame, text="✂️ セグメント生成", command=generate_segments).pack(pady=5)
+    tk.Button(frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5)
     tk.Button(frame, text="🎞️ Clip生成（フォルダ）", command=generate_clips_from_folder).pack(pady=5)
     tk.Button(frame, text="🎞️ Clip生成（ファイル）", command=generate_clips_from_file).pack(pady=5)
 
