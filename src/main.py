@@ -24,9 +24,15 @@ import sys
 import logging
 from tkinter.scrolledtext import ScrolledText
 
+# 基本ディレクトリ取得
+def get_base_dir():
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
 plt.rcParams["font.family"] = "Yu Gothic"
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = get_base_dir()
 FONT_DIR = BASE_DIR / "fonts"
 SEGMENT_DIR = BASE_DIR / "output" / "segments"
 OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
@@ -682,7 +688,7 @@ def main():
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     
     root = tk.Tk()
-    root.title("YouTubeチャット＆動画処理ツール")
+    root.title("VigStreamClip")
     
     # ログ表示
     log_frame = tk.Frame(root)

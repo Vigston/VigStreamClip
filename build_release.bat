@@ -1,18 +1,19 @@
 @echo off
-REM === PyInstaller を使って src/main.py をビルドする ===
+REM === VigStreamClip を build/release/VigStreamClip_ver0.00 にビルド ===
 
 REM 設定
-SET NAME=MyApp
-SET DIST=release
-SET BUILD=pybuild
+SET VER=VigStreamClip_ver0.00
+SET NAME=VigStreamClip
+SET DIST=build\release\%VER%
+SET BUILD=build\release
 SET SCRIPT=src/main.py
 
-REM 出力先フォルダがなければ作成
+REM 出力先フォルダを作成
 if not exist %DIST% (
     mkdir %DIST%
 )
 
-REM 実行ファイルのビルド
+REM PyInstaller で exe をビルド
 pyinstaller ^
   --name=%NAME% ^
   --onefile ^
@@ -20,12 +21,15 @@ pyinstaller ^
   --distpath %DIST% ^
   --workpath %BUILD% ^
   --clean ^
-  --add-data "assets/sec/openai_key.txt;assets/sec" ^
-  --add-data "res/subtitle_style_help.txt;res" ^
-  --add-data "lib/ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe;." ^
-  --add-data "lib/ffmpeg-master-latest-win64-gpl-shared/bin/ffprobe.exe;." ^
+  --add-data "assets;assets" ^
+  --add-data "res;res" ^
   --add-data "fonts;fonts" ^
   "%SCRIPT%"
+
+REM リソースフォルダを出力先にコピー（上書きあり）
+xcopy /E /I /Y assets %DIST%\assets
+xcopy /E /I /Y res %DIST%\res
+xcopy /E /I /Y fonts %DIST%\fonts
 
 echo.
 echo ✅ ビルド完了！出力: %DIST%\%NAME%.exe
