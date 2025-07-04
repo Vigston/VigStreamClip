@@ -49,15 +49,42 @@ settings = {
     "Font": "Yu Gothic",
     "FontSize": 24,
     "Outline": 2,
-    "OutlineColour": "&H00000000",
+    "OutlineColor": "&H00000000",
     "Shadow": 1,
-    "PrimaryColour": "&H00FFFFFF",
+    "PrimaryColor": "&H00FFFFFF",
     "MarginV": 40,
     "Alignment": 2
 }
 
 # whisperの使用モデルを設定
 whisper_model = whisper.load_model("large-v3", device="cuda")
+
+COLOR_MAP = {
+    "赤": "&H000033FF&",
+    "青": "&H00FF0000&",
+    "緑": "&H0000FF00&",
+    "黄": "&H0000FFFF&",
+    "水": "&H00FFFF00&",
+    "ピンク": "&H00FF66FF&",
+    "オレンジ": "&H000099FF&",
+    "紫": "&H00CC00CC&",
+    "茶": "&H00336699&",
+    "灰": "&H00808080&",
+    "白": "&H00FFFFFF&",
+    "黒": "&H00000000&",
+    "薄赤": "&H00CCCCFF&",
+    "薄青": "&H00FFCCCC&",
+    "薄緑": "&H00CCFFCC&",
+    "薄黄": "&H00CCFFFF&",
+    "濃赤": "&H000000CC&",
+    "濃青": "&H00CC0000&",
+    "濃緑": "&H0000CC00&",
+    "金": "&H0000A5FF&",
+    "銀": "&H00C0C0C0&",
+    "ベージュ": "&H00CCFFFF&",
+    "紺": "&H00660000&",
+    "ライム": "&H0000FF80&",
+}
 
 # クリップ用データ
 @dataclass
@@ -310,6 +337,25 @@ def get_video_resolution(video_path: Path) -> str:
     height = info["streams"][0]["height"]
     return f"{width}x{height}"
 
+# srtファイルの色タグをASSタグに変換
+def convert_color_tags_to_ass(text: str) -> str:
+    def replacer(match):
+        color_name = match.group(1)
+        color_code = COLOR_MAP.get(color_name)
+        if color_code:
+            return f"{{\\c{color_code}}}"
+        else:
+            return match.group(0)  # 未定義色はそのまま残す
+
+    converted = re.sub(r"\{(.*?)\}", replacer, text)
+
+    # 既に色タグが含まれていなければ settings["PrimaryColor"] を追加
+    if r"\c&H" not in converted:
+        color_code = settings.get("PrimaryColor", "&H00FFFFFF&")
+        converted = f"{{\\c{color_code}}}" + converted
+
+    return converted
+
 # クリップ動画の作成、出力
 def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     clip_path = output_dir / f"clip_{index}.mp4"
@@ -372,10 +418,11 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
             start = format_timestamp(seg["start"])
             end = format_timestamp(seg["end"])
 
-            # 🔽 ここで自動改行を適用
+            # 自動改行を適用
             wrapped_text = wrap_text_for_subtitles(corr["text"], max_width)
-
-            f.write(f"{i+1}\n{start} --> {end}\n{wrapped_text}\n\n")
+            # 色タグ変換
+            styled_text = convert_color_tags_to_ass(wrapped_text)
+            f.write(f"{i+1}\n{start} --> {end}\n{styled_text}\n\n")
 
     # ⑥ 差分ログを出力
     with open(diff_path, "w", encoding="utf-8") as f:
@@ -485,9 +532,9 @@ def open_subtitle_style_window(root):
     OptionMenu(font_frame, font_var, *AVAILABLE_FONTS).pack(side=LEFT)
 
     add_entry("フォントサイズ", "FontSize")
-    add_entry("文字色", "PrimaryColour")
+    add_entry("文字色", "PrimaryColor")
     add_entry("縁取りサイズ", "Outline")
-    add_entry("縁取り色", "OutlineColour")
+    add_entry("縁取り色", "OutlineColor")
     add_entry("影のサイズ", "Shadow")
     add_entry("下マージン", "MarginV")
     add_entry("位置 (1~9)", "Alignment")
@@ -541,9 +588,9 @@ def generate_subtitle_filter(srt_path: Path) -> str:
     style_str = (
         f"FontName={escape_font_name(font_name)},"
         f"FontSize={s['FontSize']},"
-        f"PrimaryColour={s['PrimaryColour']},"
+        f"PrimaryColor={s['PrimaryColor']},"
         f"Outline={s['Outline']},"
-        f"OutlineColour={s['OutlineColour']},"
+        f"OutlineColor={s['OutlineColor']},"
         f"Shadow={s['Shadow']},"
         f"MarginV={s['MarginV']},"
         f"Alignment={s['Alignment']}"
