@@ -23,6 +23,7 @@ from fontTools.ttLib import TTFont  # ← fontTools を使用
 import sys
 import logging
 from tkinter.scrolledtext import ScrolledText
+import tempfile, shutil
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -668,6 +669,71 @@ def save_settings():
     except Exception as e:
         print(f"❌ 設定の保存に失敗: {e}")
 
+def has_audio_stream(video_path):
+    result = subprocess.run(
+        ["ffmpeg", "-i", video_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,  # ← 重要！
+        encoding="utf-8",  # ← 安全のため追加（特に日本語ファイル名）
+        errors="replace"  # ← エンコーディングエラー対策
+    )
+    return "Audio:" in result.stderr
+
+# 1分ごとの音声データを計測
+def extract_rms_per_1min(video_path):
+    logging.info(f"[RMS] 音声解析を開始します: {video_path}")
+
+    if not has_audio_stream(video_path):
+        logging.warning(f"[RMS] 音声ストリームが存在しません: {video_path}")
+        return {}
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-i", video_path,
+        "-af", "astats=metadata=1:reset=1",
+        "-f", "null", "-"
+    ]
+
+    logging.debug(f"[RMS] ffmpeg コマンド: {' '.join(cmd)}")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace"
+    )
+
+    stderr_output = result.stderr
+
+    # デバッグ用ログ出力ファイル
+    with open("rms_debug.txt", "w", encoding="utf-8") as f:
+        f.write(stderr_output)
+    logging.info("[RMS] stderr 出力を rms_debug.txt に保存しました")
+
+    # 正規表現で RMS データ抽出
+    pattern = re.compile(r"t:\s*([\d.]+).*?RMS level:\s*(-?[\d.]+)")
+    matches = pattern.findall(stderr_output)
+
+    if not matches:
+        logging.warning("[RMS] astats 出力に RMS データが見つかりません。音声が無音か、抽出失敗の可能性があります。")
+        return {}
+
+    logging.info(f"[RMS] 抽出されたデータポイント数: {len(matches)}")
+
+    # 1分単位でグループ化
+    grouped = defaultdict(list)
+    for t_str, rms_str in matches:
+        minute = int(float(t_str) // 60)
+        grouped[minute].append(float(rms_str))
+
+    # 平均化して整形
+    rms_data = {minute: sum(vals)/len(vals) for minute, vals in grouped.items()}
+    logging.info(f"[RMS] 分単位の平均音量データを抽出しました（{len(rms_data)}分間）")
+    
+    return rms_data
+
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
     
@@ -729,10 +795,18 @@ def main():
                 self.widget.yview('end')
             self.widget.after(0, append)
 
+    # GUI用ログハンドラー
     text_handler = TextHandler(log_widget)
     text_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-    logging.getLogger().addHandler(text_handler)
-    logging.getLogger().setLevel(logging.DEBUG)
+
+    # VSCodeなどのターミナル用ログハンドラー（sys.__stdout__で直接ターミナルへ）
+    console_handler = logging.StreamHandler(sys.__stdout__)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(text_handler)
+    logger.addHandler(console_handler)
     
     # メニューバー追加
     menubar = tk.Menu(root)
@@ -883,7 +957,7 @@ def main():
                     t = float(msg["time_in_seconds"])
                     if t < 0:
                         continue
-                    bucket = int(t // 300) * 300
+                    bucket = int(t // 60) * 60
                     chat_counts[bucket] += 1
                 except (KeyError, ValueError):
                     continue
@@ -897,24 +971,42 @@ def main():
                     valleys.append(t)
                 elif y[i - 1] < y[i] > y[i + 1]:
                     peaks.append(t)
-            state.update({"x": x, "y": y, "x_labels": x_labels, "valleys": valleys, "peaks": peaks})
+            
+            # 音量データ取得
+            rms_data = extract_rms_per_1min(state["video_file"])
+            print("📈 RMS解析結果（1分ごと）:", rms_data)
+
+            rms_x = sorted(rms_data.keys())
+            rms_y = [rms_data[t] for t in rms_x]
+            rms_labels = [f"{s//3600}:{(s//60)%60:02}" for s in rms_x]
+            
+            state.update({"x": x, "y": y, "x_labels": x_labels, "valleys": valleys, "peaks": peaks, "rms_y": rms_y, "rms_labels": rms_labels})
+            
+            logging.info(f"🔍 音量データ: {state.get('rms_labels')} / {state.get('rms_y')}")
+            
             root.after(0, draw_graph)
 
         def draw_graph():
-            plt.figure(figsize=(12, 5))
-            plt.plot(state["x_labels"], state["y"], label="チャット数")
-            for i in range(1, len(state["y"]) - 1):
-                if state["x"][i] in state["valleys"]:
-                    plt.plot(state["x_labels"][i], state["y"][i], 'ro')
-                elif state["x"][i] in state["peaks"]:
-                    plt.plot(state["x_labels"][i], state["y"][i], 'bo')
-            plt.xlabel("動画時間（時:分）")
-            plt.ylabel("チャット数（5分単位）")
-            plt.title(state["raw_title"])
-            plt.grid()
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
+            def plot():
+                plt.figure(figsize=(12, 5))
+                plt.plot(state["x_labels"], state["y"], label="チャット数（1分）", color="blue")
+
+                # 音量グラフがあるときのみ描画
+                if "rms_labels" in state and "rms_y" in state and state["rms_labels"] and state["rms_y"]:
+                    if len(state["rms_labels"]) == len(state["rms_y"]):
+                        plt.plot(state["rms_labels"], state["rms_y"], label="音量（1分RMS dB）", color="orange")
+                    else:
+                        logging.warning("rms_labels と rms_y の長さが一致しません。音量グラフは描画されません。")
+
+                plt.xlabel("動画時間")
+                plt.ylabel("値")
+                plt.title(state["raw_title"])
+                plt.grid()
+                plt.legend()
+                plt.tight_layout()
+                plt.show()
+
+            threading.Thread(target=plot).start()
 
         t = threading.Thread(target=analyze)
         t.start()
