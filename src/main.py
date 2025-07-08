@@ -729,10 +729,18 @@ def main():
                 self.widget.yview('end')
             self.widget.after(0, append)
 
+    # GUI用ログハンドラー
     text_handler = TextHandler(log_widget)
     text_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-    logging.getLogger().addHandler(text_handler)
-    logging.getLogger().setLevel(logging.DEBUG)
+
+    # VSCodeなどのターミナル用ログハンドラー（sys.__stdout__で直接ターミナルへ）
+    console_handler = logging.StreamHandler(sys.__stdout__)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(text_handler)
+    logger.addHandler(console_handler)
     
     # メニューバー追加
     menubar = tk.Menu(root)
