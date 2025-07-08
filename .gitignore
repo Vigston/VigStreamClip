@@ -187,3 +187,4 @@ cython_debug/
 /assets/sec
 /pybuild
 /release
+src/test.py

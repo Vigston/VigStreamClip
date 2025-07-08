@@ -18,11 +18,12 @@ from datetime import timedelta
 import openai
 from tkinter import *
 from tkinter import messagebox
-import shutil
 from fontTools.ttLib import TTFont  # ← fontTools を使用
 import sys
 import logging
 from tkinter.scrolledtext import ScrolledText
+import numpy as np
+import soundfile as sf
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -668,6 +669,28 @@ def save_settings():
     except Exception as e:
         print(f"❌ 設定の保存に失敗: {e}")
 
+# wavファイルに変換(音データ取得のため)
+def convert_to_wav(input_file, wav_file):
+    cmd = [
+        "ffmpeg", "-y", "-i", input_file,
+        "-ac", "1",
+        "-ar", "44100",
+        wav_file
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def extract_rms_numpy(wav_file):
+    audio, samplerate = sf.read(wav_file)
+    duration = len(audio) / samplerate
+    rms_values = []
+    for i in range(int(duration)):
+        start = i * samplerate
+        end = (i + 1) * samplerate
+        rms = np.sqrt(np.mean(audio[start:end] ** 2))
+        rms_db = 20 * np.log10(rms) if rms > 0 else -100
+        rms_values.append(rms_db)
+    return rms_values
+
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
     
@@ -906,21 +929,53 @@ def main():
                 elif y[i - 1] < y[i] > y[i + 1]:
                     peaks.append(t)
             state.update({"x": x, "y": y, "x_labels": x_labels, "valleys": valleys, "peaks": peaks})
+            
+            # --- 音量（RMS）データ抽出 ---
+            video_file = state["video_file"]
+            wav_file = "temp_audio.wav"
+            
+            if not os.path.exists(video_file):
+                print(f"⚠️ 動画ファイルが見つかりません: {video_file}")
+                root.after(0, draw_graph)
+                return
+            
+            convert_to_wav(video_file, wav_file)
+            rms_values = extract_rms_numpy(wav_file)
+            os.remove(wav_file)  # 一時ファイル削除
+            
+            # X軸は1秒ごと（動画の長さ秒分）
+            audio_x = np.arange(len(rms_values))
+            state["audio_x"] = audio_x
+            state["audio_y"] = rms_values
+            
             root.after(0, draw_graph)
 
         def draw_graph():
             plt.figure(figsize=(12, 5))
-            plt.plot(state["x_labels"], state["y"], label="チャット数")
+        
+            # ① チャット数（5分毎, X軸は時:分ラベル）
+            plt.plot(state["x"], state["y"], label="チャット数", color="blue")
             for i in range(1, len(state["y"]) - 1):
                 if state["x"][i] in state["valleys"]:
-                    plt.plot(state["x_labels"][i], state["y"][i], 'ro')
+                    plt.plot(state["x"][i], state["y"][i], 'ro')
                 elif state["x"][i] in state["peaks"]:
-                    plt.plot(state["x_labels"][i], state["y"][i], 'bo')
+                    plt.plot(state["x"][i], state["y"][i], 'bo')
+        
+            # ② 音量RMS（1秒毎, X軸は「秒」→ラベル位置にあわせて右側の軸にプロット）
+            if "audio_y" in state:
+                audio_x = state["audio_x"]  # 1秒単位 [0,1,2,...]
+                audio_y = state["audio_y"]  # RMS(dB)
+                ax1 = plt.gca()
+                ax2 = ax1.twinx()  # 右Y軸
+                ax2.plot(audio_x, audio_y, color="orange", alpha=0.5, label="音量(RMS dB)")
+                ax2.set_ylabel("音量（dB, 1秒毎）", fontname="Yu Gothic")
+        
+            plt.xticks(state["x"], state["x_labels"])
             plt.xlabel("動画時間（時:分）")
-            plt.ylabel("チャット数（5分単位）")
-            plt.title(state["raw_title"])
+            plt.ylabel("チャット数（5分単位）", fontname="Yu Gothic")
+            plt.title(state["raw_title"], fontname="Yu Gothic")
             plt.grid()
-            plt.legend()
+            plt.legend(loc="upper left")
             plt.tight_layout()
             plt.show()
 
