@@ -840,64 +840,60 @@ def main():
         if not update_paths_from_url():
             return
 
-        # 🔹 保存先をエクスプローラーで選択（.mp4 指定）
-        initial_name = f"{state['safe_title']}.mp4"
-        save_path = filedialog.asksaveasfilename(
-            title="保存先を選択してください",
-            defaultextension=".mp4",
-            filetypes=[("MP4 files", "*.mp4")],
-            initialfile=initial_name
-        )
-
-        if not save_path:
+        # 🔹 保存先フォルダを選択（ファイル名は自動決定）
+        save_dir = filedialog.askdirectory(title="保存先フォルダを選択してください")
+        if not save_dir:
             print("⚠️ 保存がキャンセルされました。")
             return
+        
+        print("動画ダウンロード開始・・・")
 
-        # 🔸 state["video_file"] にセット（後続処理のため）
-        state["video_file"] = save_path
+        save_dir = Path(save_dir)
 
-        # 🔹 ユーザー指定解像度
+        # 🔸 ユーザー設定解像度
         resolution = settings.get("Resolution", "1920x1080")
-        width_str, height_str = resolution.lower().split("x")
-        width = int(width_str)
-        height = int(height_str)
+        target_width, target_height = map(int, resolution.lower().split("x"))
 
-        # 🔸 yt-dlpでフルHD（137+140）を一時ファイルにダウンロード
-        fullhd_selector = "137+140"
+        # 🔸 保存ファイル名（元タイトルベース）
+        base_name = state["safe_title"]
+        base_output = save_dir / f"{base_name}_1920x1080.mp4"
+        final_output = save_dir / f"{base_name}_{target_width}x{target_height}.mp4"
 
+        # 🔹 yt-dlpで 1920x1080 ダウンロード
         subprocess.run([
             "yt-dlp",
-            "--force-overwrites",  # ← 🔥 強制上書き
-            "-f", fullhd_selector,
+            "--force-overwrites",
+            "-f", "137+140",
             "--merge-output-format", "mp4",
-            "-o", save_path,
+            "-o", str(base_output),
             state["video_url"]
         ], check=True)
+        print(f"✅ 1920x1080 動画をダウンロード完了: {base_output.name}")
 
-        # 🔹 フルHDならそのまま完了
+        # 🔹 ユーザー指定が1920x1080なら変換不要
         if resolution == "1920x1080":
-            messagebox.showinfo("完了", f"動画ダウンロード完了！（{resolution}）")
+            state["video_file"] = str(base_output)
+            messagebox.showinfo("完了", f"動画取得完了: {base_output.name}")
             return
 
-        # 🔹 それ以外 → トリミング＋リサイズ
-        crop_width = int(720 * width / 1080)
-        crop_x = (1920 - crop_width) // 2
-        vf_filter = f"crop={crop_width}:1080:{crop_x}:0,scale={width}:{height}"
-
-        output_temp_path = Path(save_path).with_stem(Path(save_path).stem + "_converted")
+        # 🔹 アスペクト比維持＋黒帯で中央寄せ
+        vf_filter = (
+            f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease," 
+            f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
+        )
 
         subprocess.run([
             "ffmpeg", "-y",
-            "-i", save_path,
+            "-i", str(base_output),
             "-vf", vf_filter,
             "-c:v", "h264_nvenc",
             "-c:a", "copy",
-            str(output_temp_path)
+            str(final_output)
         ], check=True)
+        print(f"✅ {resolution} 動画をダウンロード完了: {base_output.name}")
 
-        os.replace(output_temp_path, save_path)
-
-        messagebox.showinfo("完了", f"動画ダウンロードと変換完了！（{resolution}）")
+        state["video_file"] = str(final_output)
+        messagebox.showinfo("完了", f"変換完了: {final_output.name}")
 
     def analyze_and_plot() -> threading.Thread:
         def analyze():
