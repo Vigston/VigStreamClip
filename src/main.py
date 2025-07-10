@@ -388,14 +388,33 @@ def generate_subtitles_to_video(input_video: Path, input_srt: Path, output_video
         str(output_video)
     ], check=True)
 
+# 長い字幕を自動で適切な長さに分割
+def split_long_subtitle(text: str, max_chars: int) -> list:
+    """長い字幕テキストを句読点・読点・スペースなどで自然に分割"""
+    blocks = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        # 指定文字数を超えたら区切り文字で分割
+        if len(buf) >= max_chars and ch in "。！？、,. ":
+            blocks.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        blocks.append(buf.strip())
+    return blocks
+
 # クリップ動画の作成、出力
 def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
-    clip_path = output_dir / f"clip_{index}.mp4"
-    srt_path = output_dir / f"clip_{index}.srt"
-    raw_srt_path = output_dir / f"clip_{index}_raw.srt"
-    diff_path = output_dir / f"clip_{index}_diff.txt"
-    subtitled_path = output_dir / f"clip_{index}_subtitled.mp4"
-    structure_path = output_dir / f"clip_{index}_structure.json"
+    # clipごとのサブフォルダを作成
+    clip_dir = output_dir / f"clip_{index}"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+
+    clip_path = clip_dir / f"clip_{index}.mp4"
+    srt_path = clip_dir / f"clip_{index}.srt"
+    raw_srt_path = clip_dir / f"clip_{index}_raw.srt"
+    diff_path = clip_dir / f"clip_{index}_diff.txt"
+    subtitled_path = clip_dir / f"clip_{index}_subtitled.mp4"
+    structure_path = clip_dir / f"clip_{index}_structure.json"
 
     # ① 動画を切り出し
     subprocess.run([
@@ -443,18 +462,33 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     
     print(f"[export_clip]max_width:{max_width}")
 
-    # ⑤ 校閲済み字幕を srt に保存（タイミングはWhisper通り）
+    # ⑤ 校閲済み字幕を srt に保存（SRT出力時、時刻も分割する）
     with open(srt_path, "w", encoding="utf-8") as f:
+        entry_num = 1
         for i, corr in enumerate(corrected):
             seg = segments[corr["index"]]
-            start = format_timestamp(seg["start"])
-            end = format_timestamp(seg["end"])
+            seg_start = seg["start"]
+            seg_end = seg["end"]
 
-            # 自動改行を適用
-            wrapped_text = wrap_text_for_subtitles(corr["text"], max_width)
-            # 色タグ変換
-            styled_text = convert_color_tags_to_ass(wrapped_text)
-            f.write(f"{i+1}\n{start} --> {end}\n{styled_text}\n\n")
+            blocks = split_long_subtitle(corr['text'], max_width)
+            if not blocks:
+                blocks = [corr['text']]
+            block_count = len(blocks)
+
+            # 1ブロックあたりの秒数
+            total_duration = seg_end - seg_start
+            if block_count == 0:
+                block_count = 1
+            duration_per_block = total_duration / block_count
+
+            for b_idx, b in enumerate(blocks):
+                # 各ブロックの時間を計算
+                block_start = seg_start + duration_per_block * b_idx
+                block_end = seg_start + duration_per_block * (b_idx + 1)
+                start_str = format_timestamp(block_start)
+                end_str = format_timestamp(block_end)
+                f.write(f"{entry_num}\n{start_str} --> {end_str}\n{b}\n\n")
+                entry_num += 1
 
     # ⑥ 差分ログを出力
     with open(diff_path, "w", encoding="utf-8") as f:
@@ -902,6 +936,17 @@ def main():
             if not os.path.exists(state["chat_file"]):
                 messagebox.showwarning("警告", "チャットファイルが存在しません。")
                 return
+            
+            # 🎥 分析する動画ファイルを選択
+            video_file = filedialog.askopenfilename(
+                title="情報分析に使う動画ファイルを選択",
+                filetypes=[("MP4 Files", "*.mp4")]
+            )
+            
+            if not video_file:
+                print(f"⚠️ 分析の為の動画選択がキャンセルされました。: {video_file}")
+                return
+            
             with open(state["chat_file"], "r", encoding="utf-8") as f:
                 data = json.load(f)
             chat_counts = defaultdict(int)
@@ -927,13 +972,7 @@ def main():
             state.update({"x": x, "y": y, "x_labels": x_labels, "valleys": valleys, "peaks": peaks})
             
             # --- 音量（RMS）データ抽出 ---
-            video_file = state["video_file"]
             wav_file = "temp_audio.wav"
-            
-            if not os.path.exists(video_file):
-                print(f"⚠️ 動画ファイルが見つかりません: {video_file}")
-                root.after(0, draw_graph)
-                return
             
             convert_to_wav(video_file, wav_file)
             rms_values = extract_rms_numpy(wav_file)
