@@ -6,6 +6,7 @@ from collections import defaultdict
 import threading
 import urllib.parse
 import tkinter as tk
+from tkinter import ttk
 from tkinter import messagebox, filedialog
 from pathlib import Path
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ import logging
 from tkinter.scrolledtext import ScrolledText
 import numpy as np
 import soundfile as sf
+from PIL import Image, ImageDraw, ImageFont
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -64,7 +66,17 @@ settings = {
     "Shadow": 1,
     "PrimaryColor": "&H00FFFFFF",
     "MarginV": 40,
-    "Alignment": 2
+    "Alignment": 2,
+    
+    # タイトルスタイル
+    "TitleFont": "Yu Gothic",
+    "TitleFontSize": 120,
+    "TitleAreaX": 0,           # 画像左上からのX座標
+    "TitleAreaY": 0,           # 画像左上からのY座標
+    "TitleAreaWidth": 800,     # 表示エリア幅
+    "TitleAreaHeight": 200,    # 表示エリア高さ
+    "TitleAlignV": "top",      # 文字の矩形内表示位置(y) 'top', 'center', 'bottom'
+    "TitleAlignH": "center",   # 文字の矩形内表示位置(x) 'left', 'center', 'right'
 }
 
 # whisperの使用モデルを設定
@@ -550,7 +562,7 @@ def open_resolution_window(root: tk.Tk):
     tk.Button(res_win, text="保存", command=save_resolution).pack(pady=10)
 
 # 字幕設定ウィンドウ表示
-def open_subtitle_style_window(root):
+def open_subtitle_style_window(root: tk.Tk):
     def show_help():
         help_win = Toplevel(root)
         help_win.title("字幕スタイルの説明")
@@ -640,6 +652,63 @@ def open_subtitle_style_window(root):
 
     Button(style_win, text="カスタムフォント", command=choose_custom_font).pack(pady=6)
     Button(style_win, text="保存", command=save_style).pack(pady=10)
+
+def open_title_style_dialog(root: tk.Tk):
+    dialog = tk.Toplevel(root)
+    dialog.title("題名スタイル設定")
+
+    # ▼ フォント名選択
+    tk.Label(dialog, text="フォント名:").grid(row=0, column=0)
+    title_font_var = tk.StringVar(value=settings.get("TitleFont", "Yu Gothic"))
+    font_choices = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"] + list(CUSTOM_FONT_PATHS.keys())
+    tk.OptionMenu(dialog, title_font_var, *font_choices).grid(row=0, column=1)
+
+    # ▼ フォントサイズ
+    tk.Label(dialog, text="フォントサイズ:").grid(row=1, column=0)
+    title_font_size_var = tk.IntVar(value=settings.get("TitleFontSize", 120))
+    tk.Spinbox(dialog, from_=10, to=400, textvariable=title_font_size_var).grid(row=1, column=1)
+
+    # エリア
+    tk.Label(dialog, text="X座標:").grid(row=2, column=0)
+    x_var = tk.IntVar(value=settings.get("TitleAreaX", 0))
+    tk.Spinbox(dialog, from_=0, to=9999, textvariable=x_var).grid(row=2, column=1)
+
+    tk.Label(dialog, text="Y座標:").grid(row=3, column=0)
+    y_var = tk.IntVar(value=settings.get("TitleAreaY", 0))
+    tk.Spinbox(dialog, from_=0, to=9999, textvariable=y_var).grid(row=3, column=1)
+
+    tk.Label(dialog, text="幅:").grid(row=4, column=0)
+    w_var = tk.IntVar(value=settings.get("TitleAreaWidth", 800))
+    tk.Spinbox(dialog, from_=0, to=9999, textvariable=w_var).grid(row=4, column=1)
+
+    tk.Label(dialog, text="高さ:").grid(row=5, column=0)
+    h_var = tk.IntVar(value=settings.get("TitleAreaHeight", 200))
+    tk.Spinbox(dialog, from_=0, to=9999, textvariable=h_var).grid(row=5, column=1)
+
+    # 垂直位置
+    tk.Label(dialog, text="縦位置:").grid(row=6, column=0)
+    v_var = tk.StringVar(value=settings.get("TitleAlignV", "top"))
+    ttk.Combobox(dialog, textvariable=v_var, values=["top", "center", "bottom"]).grid(row=6, column=1)
+
+    # 水平位置
+    tk.Label(dialog, text="横位置:").grid(row=7, column=0)
+    h_align_var = tk.StringVar(value=settings.get("TitleAlignH", "center"))
+    ttk.Combobox(dialog, textvariable=h_align_var, values=["left", "center", "right"]).grid(row=7, column=1)
+
+    # 保存
+    def save_settings_and_close():
+        settings["TitleFont"] = title_font_var.get()
+        settings["TitleFontSize"] = title_font_size_var.get()
+        settings["TitleAreaX"] = x_var.get()
+        settings["TitleAreaY"] = y_var.get()
+        settings["TitleAreaWidth"] = w_var.get()
+        settings["TitleAreaHeight"] = h_var.get()
+        settings["TitleAlignV"] = v_var.get()
+        settings["TitleAlignH"] = h_align_var.get()
+        # フォントやサイズもあればここで
+        save_settings()  # 保存関数呼ぶ
+        dialog.destroy()
+    tk.Button(dialog, text="保存", command=save_settings_and_close).grid(row=8, column=0, columnspan=2)
 
 # 字幕の焼き直し
 def clip_reburn_gui():
@@ -809,6 +878,7 @@ def main():
     menubar.add_cascade(label="設定", menu=setting_menu)
     setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(root))
     setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window(root))
+    setting_menu.add_command(label="題名スタイル", command=lambda: open_title_style_dialog(root))
     setting_menu.add_separator()
     setting_menu.add_command(label="💾 設定を保存", command=lambda: (
     save_settings(),
@@ -1112,6 +1182,206 @@ def main():
             root.after(0, lambda: messagebox.showinfo("完了", "ファイルのクリップ生成が完了しました"))
 
         threading.Thread(target=run).start()
+    
+    def extract_valley_peak_pairs(valleys, peaks):
+        # 時間順に並んだ山谷をまとめる
+        points = []
+        for t in valleys:
+            points.append(("valley", t))
+        for t in peaks:
+            points.append(("peak", t))
+        points.sort(key=lambda x: x[1])  # 時間でソート
+
+        pairs = []
+        prev_valley = None
+        for kind, t in points:
+            if kind == "valley":
+                prev_valley = t
+            elif kind == "peak" and prev_valley is not None and t > prev_valley:
+                pairs.append((prev_valley, t))
+                prev_valley = None  # 次のvalleyまで待つ
+        return pairs
+    
+    def get_text_size(text, font):
+        if hasattr(font, "getbbox"):
+            bbox = font.getbbox(text)
+            width = bbox[2] - bbox[0]
+            height = bbox[3] - bbox[1]
+            return width, height
+        else:
+            return font.getsize(text)
+    
+    def wrap_title_text(text, font, max_width):
+        """
+        1行の横幅がmax_widthを超えないよう自動改行した行リストを返す
+        """
+        lines = []
+        line = ""
+        for char in text:
+            test_line = line + char
+            w, _ = get_text_size(test_line, font)
+            if w > max_width and line:
+                lines.append(line)
+                line = char
+            else:
+                line = test_line
+        if line:
+            lines.append(line)
+        return lines
+    
+    def calc_title_position(img, lines, font, settings):
+        """
+        settings: TitleAreaX, TitleAreaY, TitleAreaWidth, TitleAreaHeight, TitleAlignV, TitleAlignH
+        lines: wrap_textで作成した行リスト
+        """
+        x0 = settings.get("TitleAreaX", 0)
+        y0 = settings.get("TitleAreaY", 0)
+        area_w = settings.get("TitleAreaWidth", img.width)
+        area_h = settings.get("TitleAreaHeight", img.height // 3)
+        align_v = settings.get("TitleAlignV", "top")
+        align_h = settings.get("TitleAlignH", "center")
+
+        # 1行の高さ
+        _, line_h = get_text_size("あ", font)
+        total_h = line_h * len(lines)
+
+        # 垂直位置
+        if align_v == "top":
+            y = y0
+        elif align_v == "center":
+            y = y0 + (area_h - total_h) // 2
+        elif align_v == "bottom":
+            y = y0 + (area_h - total_h)
+        else:
+            y = y0
+
+        return x0, y, area_w, align_h, line_h
+    
+    def draw_title_on_img(img, title, font, settings):
+        draw = ImageDraw.Draw(img)
+        area_w = settings.get("TitleAreaWidth", img.width)
+        # ラップ
+        lines = wrap_title_text(title, font, area_w)
+        # 位置
+        x0, y, area_w, align_h, line_h = calc_title_position(img, lines, font, settings)
+
+        for line in lines:
+            text_w, _ = get_text_size(line, font)
+            # 水平
+            if align_h == "left":
+                x = x0
+            elif align_h == "center":
+                x = x0 + (area_w - text_w) // 2
+            elif align_h == "right":
+                x = x0 + (area_w - text_w)
+            else:
+                x = x0
+            # 影
+            draw.text((x+2, y+2), line, font=font, fill=(0,0,0,128))
+            # 本体
+            draw.text((x, y), line, font=font, fill=(255,255,255,255))
+            y += line_h
+        return img
+    
+    def generate_all_thumbnails_gui():
+        mp4_path = filedialog.askopenfilename(
+            title="サムネイル生成する元動画ファイルを選択",
+            filetypes=[("MP4ファイル", "*.mp4")]
+        )
+        if not mp4_path:
+            print("❌ 動画ファイルが選択されませんでした")
+            return
+
+        # ▼ サムネイル題名スタイル設定の取得（なければデフォルト）
+        title_font_name = settings.get("TitleFont", "Yu Gothic")
+        title_font_size = settings.get("TitleFontSize", 120)
+        area_x = settings.get("TitleAreaX", 0)
+        area_y = settings.get("TitleAreaY", 0)
+        area_w = settings.get("TitleAreaWidth")
+        area_h = settings.get("TitleAreaHeight")
+        align_v = settings.get("TitleAlignV", "top")    # "top", "center", "bottom"
+        align_h = settings.get("TitleAlignH", "center") # "left", "center", "right"
+        font_path = CUSTOM_FONT_PATHS.get(title_font_name)
+
+        video_path = Path(mp4_path)
+        valleys = state.get("valleys")
+        peaks = state.get("peaks")
+        audio_y = state.get("audio_y")
+        title = state.get("raw_title", video_path.stem)
+
+        if not valleys or not peaks or not audio_y:
+            messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
+            return
+
+        # output/thumbnail フォルダ作成
+        thumbnail_dir = BASE_DIR / "output" / "thumbnail"
+        thumbnail_dir.mkdir(parents=True, exist_ok=True)
+
+        pairs = extract_valley_peak_pairs(valleys, peaks)
+
+        for idx, (start_sec, end_sec) in enumerate(pairs, 1):  # 1から開始
+            if end_sec > len(audio_y):
+                print(f"⚠️ 区間{idx}: end_sec={end_sec}が音量データ範囲外です。スキップ")
+                continue
+            segment_rms = audio_y[start_sec:end_sec+1]
+            if not segment_rms:
+                print(f"⚠️ 区間{idx}: 区間内音量データなし。スキップ")
+                continue
+
+            rel_max_idx = int(np.argmax(segment_rms))
+            abs_max_sec = start_sec + rel_max_idx
+
+            # サムネイルファイル名例: 元動画名_segment01_thumbnail.jpg
+            base_name = f"{video_path.stem}_segment{idx:02}_thumbnail"
+            thumbnail_base_pattern = thumbnail_dir / (base_name + "_base_%d.jpg")  # ffmpeg出力パターン
+            thumbnail_base_file = thumbnail_dir / (base_name + "_base_1.jpg")      # 実際の出力ファイル
+            output_thumbnail = thumbnail_dir / (base_name + ".jpg")
+
+            try:
+                subprocess.run([
+                    "ffmpeg", "-y",
+                    "-ss", str(abs_max_sec),
+                    "-i", str(video_path),
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    str(thumbnail_base_pattern)
+                ], check=True)
+
+                img = Image.open(thumbnail_base_file)
+
+                # フォントインスタンス作成
+                try:
+                    if font_path:
+                        font = ImageFont.truetype(font_path, title_font_size)
+                    else:
+                        font = ImageFont.truetype("arial.ttf", title_font_size)
+                except Exception:
+                    font = ImageFont.load_default()
+
+                # 描画エリア
+                use_area_w = area_w if area_w else img.width
+                use_area_h = area_h if area_h else img.height // 3
+
+                # 設定まとめ
+                settings_for_pos = {
+                    "TitleAreaX": area_x,
+                    "TitleAreaY": area_y,
+                    "TitleAreaWidth": use_area_w,
+                    "TitleAreaHeight": use_area_h,
+                    "TitleAlignV": align_v,
+                    "TitleAlignH": align_h,
+                }
+
+                # ここで draw_title_on_img を使う！
+                img = draw_title_on_img(img, title, font, settings_for_pos)
+
+                img.save(output_thumbnail)
+                thumbnail_base_file.unlink(missing_ok=True)
+                print(f"✅ サムネイル生成: {output_thumbnail}")
+            except Exception as e:
+                print(f"❌ サムネイル生成失敗: segment{idx} {e}")
+
+        messagebox.showinfo("完了", f"すべてのサムネイル画像を\noutput/thumbnail/\nに保存しました。")
 
     label = tk.Label(frame, text="YouTube動画URLを入力:")
     label.pack()
@@ -1123,6 +1393,7 @@ def main():
     tk.Button(frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5)
     tk.Button(frame, text="🎞️ Clip生成（フォルダ）", command=generate_clips_from_folder).pack(pady=5)
     tk.Button(frame, text="🎞️ Clip生成（ファイル）", command=generate_clips_from_file).pack(pady=5)
+    tk.Button(frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5)
 
     root.mainloop()
 
