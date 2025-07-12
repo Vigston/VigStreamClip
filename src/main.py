@@ -934,6 +934,9 @@ def main():
         if os.path.exists(state["chat_file"]):
             messagebox.showinfo("情報", "チャットファイルは既に存在します。")
             return
+        
+        print("チャットデータダウンロード開始・・・")
+
         subprocess.run([
             "python", "-m", "chat_downloader", state["video_url"],
             "--output", state["chat_file"]
@@ -963,6 +966,8 @@ def main():
         base_output = save_dir / f"{base_name}_1920x1080.mp4"
         final_output = save_dir / f"{base_name}_{target_width}x{target_height}.mp4"
 
+        print("動画(1920x1080)ダウンロード中・・・")
+
         # 🔹 yt-dlpで 1920x1080 ダウンロード
         subprocess.run([
             "yt-dlp",
@@ -972,7 +977,7 @@ def main():
             "-o", str(base_output),
             state["video_url"]
         ], check=True)
-        print(f"✅ 1920x1080 動画をダウンロード完了: {base_output.name}")
+        print(f"✅ 動画(1920x1080)をダウンロード完了: {base_output.name}")
 
         # 🔹 ユーザー指定が1920x1080なら変換不要
         if resolution == "1920x1080":
@@ -986,6 +991,8 @@ def main():
             f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
         )
 
+        print(f"動画(1920x1080)を使って{resolution}に編集中・・・")
+
         subprocess.run([
             "ffmpeg", "-y",
             "-i", str(base_output),
@@ -994,6 +1001,8 @@ def main():
             "-c:a", "copy",
             str(final_output)
         ], check=True)
+        print(f"動画({resolution})編集終了")
+
         print(f"✅ {resolution} 動画をダウンロード完了: {base_output.name}")
 
         state["video_file"] = str(final_output)
@@ -1017,6 +1026,9 @@ def main():
                 print(f"⚠️ 分析の為の動画選択がキャンセルされました。: {video_file}")
                 return
             
+            print("分析を開始・・・")
+            
+            print("チャットデータを読み込み")
             with open(state["chat_file"], "r", encoding="utf-8") as f:
                 data = json.load(f)
             chat_counts = defaultdict(int)
@@ -1040,7 +1052,9 @@ def main():
                 elif y[i - 1] < y[i] > y[i + 1]:
                     peaks.append(t)
             state.update({"x": x, "y": y, "x_labels": x_labels, "valleys": valleys, "peaks": peaks})
-            
+            print("チャットデータを読み込み終了")
+
+            print("動画音量(RMS)データを抽出中")
             # --- 音量（RMS）データ抽出 ---
             wav_file = "temp_audio.wav"
             
@@ -1052,10 +1066,13 @@ def main():
             audio_x = np.arange(len(rms_values))
             state["audio_x"] = audio_x
             state["audio_y"] = rms_values
+            print("動画音量(RMS)データを抽出終了")
             
             root.after(0, draw_graph)
 
         def draw_graph():
+            print("グラフ表示開始・・・")
+
             plt.figure(figsize=(12, 5))
         
             # ① チャット数（5分毎, X軸は時:分ラベル）
@@ -1102,6 +1119,8 @@ def main():
         if not video_file:
             print("⚠️ 動画ファイルが選択されませんでした。処理を中止します。")
             return
+        
+        print("セグメント生成開始・・・")
 
         # 💾 保存先は固定
         SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1391,8 +1410,8 @@ def main():
     tk.Button(frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video).start()).pack(pady=5)
     tk.Button(frame, text="📊 分析してグラフを表示", command=analyze_and_plot).pack(pady=5)
     tk.Button(frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5)
-    tk.Button(frame, text="🎞️ Clip生成（フォルダ）", command=generate_clips_from_folder).pack(pady=5)
-    tk.Button(frame, text="🎞️ Clip生成（ファイル）", command=generate_clips_from_file).pack(pady=5)
+    tk.Button(frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder).start()).pack(pady=5)
+    tk.Button(frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file).start()).pack(pady=5)
     tk.Button(frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5)
 
     root.mainloop()
