@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox, filedialog
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 import whisper
 import matplotlib
@@ -109,13 +109,138 @@ COLOR_MAP = {
     "ライム": "&H0000FF80&",
 }
 
-# クリップ用データ
-@dataclass
+# アプリデータ
+class App:
+    class StdoutRedirector:
+        def __init__(self, text_widget):
+            self.text_widget = text_widget
+        def write(self, message):
+            self.text_widget.configure(state='normal')
+            self.text_widget.insert('end', message)
+            self.text_widget.configure(state='disabled')
+            self.text_widget.yview('end')
+            self.text_widget.update_idletasks() # 「保留中の描画・レイアウト作業（アイドルタスク）」だけを今すぐ実行
+        def flush(self): pass
+
+    class TextHandler(logging.Handler):
+        def __init__(self, widget):
+            super().__init__()
+            self.widget = widget
+        def emit(self, record):
+            msg = self.format(record)
+            def append():
+                self.widget.configure(state='normal')
+                self.widget.insert('end', msg + '\n')
+                self.widget.configure(state='disabled')
+                self.widget.yview('end')
+            self.widget.after(0, append)
+    
+    def __init__(self):
+        self.root = tk.Tk()
+        self.log_frame: Frame = None
+        self.log_widget: ScrolledText = None
+        self.text_handler: App.TextHandler = None
+        self.console_handler: logging.StreamHandler = None
+        self.menubar: Menu = None
+        self.frame: tk.Frame = None
+        self.label: tk.Label = None
+        self.entry: tk.Entry = None
+        self.stream_analysis: StreamAnalysis = StreamAnalysis()
+    
+    def run(self):
+        self.root.mainloop()
+        
+    def setup(self, app_name: str):
+        self.root.title(app_name)
+        
+        self.setup_gui()
+        self.setup_logging_area()
+        self.setup_logging_redirect()
+        self.setup_menu()
+    
+    def setup_gui(self):
+        # GUIのレイアウト枠
+        self.frame = tk.Frame(self.root, padx=20, pady=20)
+        self.frame.pack()
+        
+        self.label = tk.Label(self.frame, text="YouTube動画URLを入力:")
+        self.label.pack()
+        self.entry = tk.Entry(self.frame, width=70)
+        self.entry.pack(pady=5)
+        tk.Button(self.frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat(self)).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video(self)).start()).pack(pady=5)
+        tk.Button(self.frame, text="📊 分析してグラフを表示", command=lambda: analyze_and_plot(self)).pack(pady=5)
+        tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments(self)).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder(self.root)).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file(self.root)).start()).pack(pady=5)
+        tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui(self)).start()).pack(pady=5)
+    
+    def setup_menu(self):
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
+        
+        # メニュー項目
+        #####設定#####
+        setting_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="設定", menu=setting_menu)
+        setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(self.root))
+        setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window(self.root))
+        setting_menu.add_command(label="題名スタイル", command=lambda: open_title_style_dialog(self.root))
+        setting_menu.add_separator()
+        setting_menu.add_command(label="💾 設定を保存", command=lambda: (
+            save_settings(),
+            messagebox.showinfo("保存完了", "現在の設定を保存しました。")
+        ))
+
+        #####出力#####
+        output_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="出力", menu=output_menu)
+        output_menu.add_command(label="クリップ焼き直し", command=lambda: threading.Thread(target=clip_reburn_gui).start())
+    
+    def setup_logging_area(self):
+        # ログ用ウィジェット作成
+        self.log_frame = tk.Frame(self.root)
+        self.log_frame.pack(side="bottom", fill="x")
+        self.log_widget = ScrolledText(self.log_frame, state='disabled', height=10)
+        self.log_widget.pack(fill="both", expand=True)
+
+    def setup_logging_redirect(self):
+        # stdout/stderr をGUIに
+        sys.stdout = App.StdoutRedirector(self.log_widget)
+        sys.stderr = App.StdoutRedirector(self.log_widget)
+
+        self.text_handler = App.TextHandler(self.log_widget)
+        self.text_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+
+        self.console_handler = logging.StreamHandler(sys.__stdout__)
+        self.console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+
+        logger = logging.getLogger()
+        logger.setLevel(logging.WARNING)
+        logger.addHandler(self.text_handler)
+        logger.addHandler(self.console_handler)
+
+# クリップデータ
+@dataclass(slots=True)
 class Clip:
     start_time: float
     end_time: float
 
-# ログ
+# 配信データ
+@dataclass(slots=True)
+class StreamAnalysis:
+    video_url: str = ""
+    safe_title: str = ""
+    raw_title: str = ""
+    chat_file: str = ""
+    video_file: str = ""
+    x: List[int] = field(default_factory=list)
+    y: List[int] = field(default_factory=list)
+    x_labels: List[str] = field(default_factory=list)
+    valleys: List[int] = field(default_factory=list)
+    peaks: List[int] = field(default_factory=list)
+    audio_x: List[int] = field(default_factory=list)
+    audio_y: List[float] = field(default_factory=list)
 
 # 直接ファイルを開く場合はこれを通して行う
 def resource_path(relative_path: str) -> Path:
@@ -415,8 +540,15 @@ def split_long_subtitle(text: str, max_chars: int) -> list:
         blocks.append(buf.strip())
     return blocks
 
-# クリップ動画の作成、出力
 def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
+    """
+    クリップ動画の出力
+    Args:
+        index (int): クリップ番号
+        clip (Clip): クリップデータ
+        video_path (Path): クリップ元動画のパス
+        output_dir (Path): クリップ動画の出力先パス
+    """
     # clipごとのサブフォルダを作成
     clip_dir = output_dir / f"clip_{index}"
     clip_dir.mkdir(parents=True, exist_ok=True)
@@ -794,6 +926,492 @@ def extract_rms_numpy(wav_file):
         rms_values.append(rms_db)
     return rms_values
 
+##### クリップ #####
+def generate_clips_from_folder(root: tk.Tk):
+        """
+        セグメント動画フォルダ指定してクリップ動画を生成する
+        """
+        segment_dir_path = filedialog.askdirectory(title="セグメントフォルダを選択")
+        if not segment_dir_path:
+            print("⚠️ セグメントフォルダが選択されませんでした。処理を中止します。")
+            return
+    
+        def run():
+            print(f"📁 フォルダ選択でクリップ動画の生成を開始します・・・: {segment_dir_path}")
+            for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
+                generate_clips(segment_file_path)
+            root.after(0, lambda: messagebox.showinfo("完了", "フォルダ指定のクリップ動画生成が完了しました"))
+    
+        threading.Thread(target=run).start()
+
+def generate_clips_from_file(root: tk.Tk):
+    """
+    セグメント動画ファイル指定してクリップ動画を生成する
+    """
+    segment_file_path = filedialog.askopenfilename(filetypes=[("MP4 Files", "*.mp4")])
+    if not segment_file_path:
+        print("⚠️ ファイルが選択されませんでした。処理を中止します。")
+        return
+    def run():
+        print(f"🎬 ファイル選択でクリップ動画の生成を開始します・・・: {segment_file_path}")
+        generate_clips(Path(segment_file_path))
+        root.after(0, lambda: messagebox.showinfo("完了", "ファイル指定のクリップ動画生成が完了しました"))
+    threading.Thread(target=run).start()
+    
+def generate_clips(segment_path: Path):
+    """
+    指定セグメント動画からクリップ動画生成する
+    Args:
+        segment_path (Path): クリップ元となるセグメント動画のファイルパス
+    """
+    print(f"🎬 クリップ動画生成開始・・・: {segment_path.name}")
+    try:
+        result = whisper_model.transcribe(str(segment_path), language="ja", task="transcribe")
+        segments = result["segments"]
+        print(f"📝 字幕セグメント数: {len(segments)}")
+        clips = group_segments_by_duration(segments, MIN_DURATION, MAX_DURATION)
+        print(f"📌 抽出されたクリップ数: {len(clips)}")
+        output_dir = OUTPUT_BASE_DIR / segment_path.stem
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for i, clip in enumerate(clips):
+            print(f"🔧 クリップ生成: clip_{i} [{clip.start_time:.2f}s - {clip.end_time:.2f}s]")
+            export_clip(i, clip, segment_path, output_dir)
+    except Exception as e:
+        print(f"❌ ファイル {segment_path.name} の処理に失敗しました: {e}")
+    print("✅ クリップ動画生成が完了しました")
+    
+def update_paths_from_url(app: App):
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return False
+        
+    
+    url_input = app.entry.get().strip()
+    if not url_input:
+        messagebox.showwarning("URL未入力", "YouTubeのURLを入力してください")
+        return False
+    normalized_url = normalize_youtube_url(url_input)
+    app.stream_analysis.video_url = normalized_url
+    result = subprocess.run([
+        "python", "-m", "yt_dlp", "--get-title", normalized_url
+    ], capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    title = result.stdout.strip()
+    if result.returncode != 0 or not title:
+        messagebox.showerror("エラー", "動画タイトルが取得できませんでした")
+        return False
+    app.stream_analysis.raw_title = title
+    app.stream_analysis.safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
+    output_dir = BASE_DIR / "output"
+    output_dir.mkdir(exist_ok=True)
+    app.stream_analysis.chat_file = str(output_dir / f"{app.stream_analysis.safe_title}_chat.json")
+    app.stream_analysis.video_file = str(output_dir / f"{app.stream_analysis.safe_title}.mp4")
+    return True
+
+def download_chat(app: App):
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return
+    if not update_paths_from_url(app):
+        return
+    if os.path.exists(app.stream_analysis.chat_file):
+        messagebox.showinfo("情報", "チャットファイルは既に存在します。")
+        return
+    
+    print("チャットデータダウンロード開始・・・", flush=True)
+    subprocess.run([
+        "python", "-m", "chat_downloader", app.stream_analysis.video_url,
+        "--output", app.stream_analysis.chat_file
+    ])
+    print("チャットデータダウンロード終了")
+    messagebox.showinfo("完了", "チャットダウンロード完了！")
+
+def download_video(app: App):
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return
+    if not update_paths_from_url(app):
+        return
+    # 🔹 保存先フォルダを選択（ファイル名は自動決定）
+    save_dir = filedialog.askdirectory(title="保存先フォルダを選択してください")
+    if not save_dir:
+        print("⚠️ 保存がキャンセルされました。")
+        return
+    
+    print("動画ダウンロード開始・・・")
+    save_dir = Path(save_dir)
+    # 🔸 ユーザー設定解像度
+    resolution = settings.get("Resolution", "1920x1080")
+    target_width, target_height = map(int, resolution.lower().split("x"))
+    # 🔸 保存ファイル名（元タイトルベース）
+    base_name = app.stream_analysis.safe_title
+    base_output = save_dir / f"{base_name}_1920x1080.mp4"
+    final_output = save_dir / f"{base_name}_{target_width}x{target_height}.mp4"
+    print("動画(1920x1080)ダウンロード中・・・")
+    # 🔹 yt-dlpで 1920x1080 ダウンロード
+    subprocess.run([
+        "yt-dlp",
+        "--force-overwrites",
+        "-f", "137+140",
+        "--merge-output-format", "mp4",
+        "-o", str(base_output),
+        app.stream_analysis.video_url
+    ], check=True)
+    print(f"✅ 動画(1920x1080)をダウンロード完了: {base_output.name}")
+    # 🔹 ユーザー指定が1920x1080なら変換不要
+    if resolution == "1920x1080":
+        app.stream_analysis.video_file = str(base_output)
+        messagebox.showinfo("完了", f"動画取得完了: {base_output.name}")
+        return
+    # 🔹 アスペクト比維持＋黒帯で中央寄せ
+    vf_filter = (
+        f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease," 
+        f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
+    )
+    print(f"動画(1920x1080)を使って{resolution}に編集中・・・")
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", str(base_output),
+        "-vf", vf_filter,
+        "-c:v", "h264_nvenc",
+        "-c:a", "copy",
+        str(final_output)
+    ], check=True)
+    print(f"動画({resolution})編集終了")
+    print(f"✅ {resolution} 動画をダウンロード完了: {base_output.name}")
+    app.stream_analysis.video_file = str(final_output)
+    messagebox.showinfo("完了", f"動画取得完了: {final_output.name}")
+
+def analyze_and_plot(app: App) -> threading.Thread:
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return
+    
+    def analyze():
+        if not update_paths_from_url(app):
+            return
+        if not os.path.exists(app.stream_analysis.chat_file):
+            messagebox.showwarning("警告", "チャットファイルが存在しません。")
+            return
+        
+        # 🎥 分析する動画ファイルを選択
+        video_file = filedialog.askopenfilename(
+            title="情報分析に使う動画ファイルを選択",
+            filetypes=[("MP4 Files", "*.mp4")]
+        )
+        
+        if not video_file:
+            print(f"⚠️ 分析の為の動画選択がキャンセルされました。: {video_file}")
+            return
+        
+        print("分析を開始・・・")
+        
+        print("チャットデータを読み込み")
+        with open(app.stream_analysis.chat_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        chat_counts = defaultdict(int)
+        for msg in data:
+            try:
+                t = float(msg["time_in_seconds"])
+                if t < 0:
+                    continue
+                bucket = int(t // 300) * 300
+                chat_counts[bucket] += 1
+            except (KeyError, ValueError):
+                continue
+        x = sorted(chat_counts.keys())
+        y = [chat_counts[t] for t in x]
+        x_labels = [f"{s//3600}:{(s//60)%60:02}" for s in x]
+        valleys, peaks = [], []
+        for i in range(1, len(y) - 1):
+            t = x[i]
+            if y[i - 1] > y[i] < y[i + 1]:
+                valleys.append(t)
+            elif y[i - 1] < y[i] > y[i + 1]:
+                peaks.append(t)
+        app.stream_analysis.x = x
+        app.stream_analysis.y = y
+        app.stream_analysis.x_labels = x_labels
+        app.stream_analysis.valleys = valleys
+        app.stream_analysis.peaks = peaks
+        print("チャットデータを読み込み終了")
+        print("動画音量(RMS)データを抽出中")
+        # --- 音量（RMS）データ抽出 ---
+        wav_file = "temp_audio.wav"
+        
+        convert_to_wav(video_file, wav_file)
+        rms_values = extract_rms_numpy(wav_file)
+        os.remove(wav_file)  # 一時ファイル削除
+        
+        # X軸は1秒ごと（動画の長さ秒分）
+        audio_x = np.arange(len(rms_values))
+        app.stream_analysis.audio_x = audio_x
+        app.stream_analysis.audio_y = rms_values
+        print("動画音量(RMS)データを抽出終了")
+        
+        app.root.after(0, draw_graph)
+    def draw_graph():
+        print("グラフ表示開始・・・")
+        plt.figure(figsize=(12, 5))
+    
+        # ① チャット数（5分毎, X軸は時:分ラベル）
+        plt.plot(app.stream_analysis.x, app.stream_analysis.y, label="チャット数", color="blue")
+        for i in range(1, len(app.stream_analysis.y) - 1):
+            if app.stream_analysis.x[i] in app.stream_analysis.valleys:
+                plt.plot(app.stream_analysis.x[i], app.stream_analysis.y[i], 'ro')
+            elif app.stream_analysis.x[i] in app.stream_analysis.peaks:
+                plt.plot(app.stream_analysis.x[i], app.stream_analysis.y[i], 'bo')
+    
+        # ② 音量RMS（1秒毎, X軸は「秒」→ラベル位置にあわせて右側の軸にプロット）
+        if hasattr(app.stream_analysis, "audio_y") and app.stream_analysis.audio_y:
+            audio_x = app.stream_analysis.audio_x  # 1秒単位 [0,1,2,...]
+            audio_y = app.stream_analysis.audio_y  # RMS(dB)
+            ax1 = plt.gca()
+            ax2 = ax1.twinx()  # 右Y軸
+            ax2.plot(audio_x, audio_y, color="orange", alpha=0.5, label="音量(RMS dB)")
+            ax2.set_ylabel("音量（dB, 1秒毎）", fontname="Yu Gothic")
+    
+        plt.xticks(app.stream_analysis.x, app.stream_analysis.x_labels)
+        plt.xlabel("動画時間（時:分）")
+        plt.ylabel("チャット数（5分単位）", fontname="Yu Gothic")
+        plt.title(app.stream_analysis.raw_title, fontname="Yu Gothic")
+        plt.grid()
+        plt.legend(loc="upper left")
+        plt.tight_layout()
+        plt.show()
+    t = threading.Thread(target=analyze)
+    t.start()
+    return t  # スレッドオブジェクトを返す
+
+def generate_segments(app: App):
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return
+    
+    if not app.stream_analysis.valleys or not app.stream_analysis.peaks:
+        print("分析を行っていなかったので分析処理を実行します。")
+        thread = analyze_and_plot()
+        thread.join() # 終わるまで待機
+    # 🎥 元動画ファイルを選択
+    video_file = filedialog.askopenfilename(
+        title="セグメント生成に使う動画ファイルを選択",
+        filetypes=[("MP4 Files", "*.mp4")]
+    )
+    if not video_file:
+        print("⚠️ 動画ファイルが選択されませんでした。処理を中止します。")
+        return
+    
+    print("セグメント生成開始・・・")
+    # 💾 保存先は固定
+    SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
+    BUFFER = 300
+    segment_count = 1
+    for v_sec in app.stream_analysis.valleys:
+        next_peaks = [p for p in app.stream_analysis.peaks if p > v_sec]
+        if not next_peaks:
+            continue
+        p_sec = next_peaks[0]
+        start = max(0, v_sec - BUFFER)
+        end = p_sec + BUFFER
+        duration = end - start
+        segment_path = SEGMENT_DIR / f"segment_{segment_count:02}.mp4"
+        subprocess.run([
+            "ffmpeg", "-ss", str(timedelta(seconds=start)),
+            "-i", video_file,
+            "-t", str(timedelta(seconds=duration)),
+            "-c", "copy", str(segment_path)
+        ])
+        segment_count += 1
+    messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {SEGMENT_DIR}")
+    
+def extract_valley_peak_pairs(valleys, peaks):
+    # 時間順に並んだ山谷をまとめる
+    points = []
+    for t in valleys:
+        points.append(("valley", t))
+    for t in peaks:
+        points.append(("peak", t))
+    points.sort(key=lambda x: x[1])  # 時間でソート
+    pairs = []
+    prev_valley = None
+    for kind, t in points:
+        if kind == "valley":
+            prev_valley = t
+        elif kind == "peak" and prev_valley is not None and t > prev_valley:
+            pairs.append((prev_valley, t))
+            prev_valley = None  # 次のvalleyまで待つ
+    return pairs
+
+def get_text_size(text, font):
+    if hasattr(font, "getbbox"):
+        bbox = font.getbbox(text)
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        return width, height
+    else:
+        return font.getsize(text)
+
+def wrap_title_text(text, font, max_width):
+    """
+    1行の横幅がmax_widthを超えないよう自動改行した行リストを返す
+    """
+    lines = []
+    line = ""
+    for char in text:
+        test_line = line + char
+        w, _ = get_text_size(test_line, font)
+        if w > max_width and line:
+            lines.append(line)
+            line = char
+        else:
+            line = test_line
+    if line:
+        lines.append(line)
+    return lines
+
+def calc_title_position(app: App,img, lines, font, settings):
+    """
+    settings: TitleAreaX, TitleAreaY, TitleAreaWidth, TitleAreaHeight, TitleAlignV, TitleAlignH
+    lines: wrap_textで作成した行リスト
+    """
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return
+    x0 = settings.get("TitleAreaX", 0)
+    y0 = settings.get("TitleAreaY", 0)
+    area_w = settings.get("TitleAreaWidth", img.width)
+    area_h = settings.get("TitleAreaHeight", img.height // 3)
+    align_v = settings.get("TitleAlignV", "top")
+    align_h = settings.get("TitleAlignH", "center")
+    # 1行の高さ
+    _, line_h = get_text_size("あ", font)
+    total_h = line_h * len(lines)
+    # 垂直位置
+    if align_v == "top":
+        y = y0
+    elif align_v == "center":
+        y = y0 + (area_h - total_h) // 2
+    elif align_v == "bottom":
+        y = y0 + (area_h - total_h)
+    else:
+        y = y0
+    return x0, y, area_w, align_h, line_h
+
+def draw_title_on_img(app: App, img, title, font, settings):
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return
+    draw = ImageDraw.Draw(img)
+    area_w = settings.get("TitleAreaWidth", img.width)
+    # ラップ
+    lines = wrap_title_text(title, font, area_w)
+    # 位置
+    x0, y, area_w, align_h, line_h = calc_title_position(app, img, lines, font, settings)
+    for line in lines:
+        text_w, _ = get_text_size(line, font)
+        # 水平
+        if align_h == "left":
+            x = x0
+        elif align_h == "center":
+            x = x0 + (area_w - text_w) // 2
+        elif align_h == "right":
+            x = x0 + (area_w - text_w)
+        else:
+            x = x0
+        # 影
+        draw.text((x+2, y+2), line, font=font, fill=(0,0,0,128))
+        # 本体
+        draw.text((x, y), line, font=font, fill=(255,255,255,255))
+        y += line_h
+    return img
+
+def generate_all_thumbnails_gui(app: App):
+    # アプリケーションが存在しないなら終了
+    if app is None:
+        return
+    
+    mp4_path = filedialog.askopenfilename(
+        title="サムネイル生成する元動画ファイルを選択",
+        filetypes=[("MP4ファイル", "*.mp4")]
+    )
+    if not mp4_path:
+        print("❌ 動画ファイルが選択されませんでした")
+        return
+    # ▼ サムネイル題名スタイル設定の取得（なければデフォルト）
+    title_font_name = settings.get("TitleFont", "Yu Gothic")
+    title_font_size = settings.get("TitleFontSize", 120)
+    area_x = settings.get("TitleAreaX", 0)
+    area_y = settings.get("TitleAreaY", 0)
+    area_w = settings.get("TitleAreaWidth")
+    area_h = settings.get("TitleAreaHeight")
+    align_v = settings.get("TitleAlignV", "top")    # "top", "center", "bottom"
+    align_h = settings.get("TitleAlignH", "center") # "left", "center", "right"
+    font_path = CUSTOM_FONT_PATHS.get(title_font_name)
+    video_path = Path(mp4_path)
+    valleys = app.stream_analysis.valleys
+    peaks = app.stream_analysis.peaks
+    audio_y = app.stream_analysis.audio_y
+    title = app.stream_analysis.raw_title or video_path.stem
+    if not valleys or not peaks or not audio_y:
+        messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
+        return
+    # output/thumbnail フォルダ作成
+    thumbnail_dir = BASE_DIR / "output" / "thumbnail"
+    thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    pairs = extract_valley_peak_pairs(valleys, peaks)
+    for idx, (start_sec, end_sec) in enumerate(pairs, 1):  # 1から開始
+        if end_sec > len(audio_y):
+            print(f"⚠️ 区間{idx}: end_sec={end_sec}が音量データ範囲外です。スキップ")
+            continue
+        segment_rms = audio_y[start_sec:end_sec+1]
+        if not segment_rms:
+            print(f"⚠️ 区間{idx}: 区間内音量データなし。スキップ")
+            continue
+        rel_max_idx = int(np.argmax(segment_rms))
+        abs_max_sec = start_sec + rel_max_idx
+        # サムネイルファイル名例: 元動画名_segment01_thumbnail.jpg
+        base_name = f"{video_path.stem}_segment{idx:02}_thumbnail"
+        thumbnail_base_pattern = thumbnail_dir / (base_name + "_base_%d.jpg")  # ffmpeg出力パターン
+        thumbnail_base_file = thumbnail_dir / (base_name + "_base_1.jpg")      # 実際の出力ファイル
+        output_thumbnail = thumbnail_dir / (base_name + ".jpg")
+        try:
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-ss", str(abs_max_sec),
+                "-i", str(video_path),
+                "-frames:v", "1",
+                "-q:v", "2",
+                str(thumbnail_base_pattern)
+            ], check=True)
+            img = Image.open(thumbnail_base_file)
+            # フォントインスタンス作成
+            try:
+                if font_path:
+                    font = ImageFont.truetype(font_path, title_font_size)
+                else:
+                    font = ImageFont.truetype("arial.ttf", title_font_size)
+            except Exception:
+                font = ImageFont.load_default()
+            # 描画エリア
+            use_area_w = area_w if area_w else img.width
+            use_area_h = area_h if area_h else img.height // 3
+            # 設定まとめ
+            settings_for_pos = {
+                "TitleAreaX": area_x,
+                "TitleAreaY": area_y,
+                "TitleAreaWidth": use_area_w,
+                "TitleAreaHeight": use_area_h,
+                "TitleAlignV": align_v,
+                "TitleAlignH": align_h,
+            }
+            
+            img = draw_title_on_img(app, img, title, font, settings_for_pos)
+            img.save(output_thumbnail)
+            thumbnail_base_file.unlink(missing_ok=True)
+            print(f"✅ サムネイル生成: {output_thumbnail}")
+        except Exception as e:
+            print(f"❌ サムネイル生成失敗: segment{idx} {e}")
+    messagebox.showinfo("完了", f"すべてのサムネイル画像を\noutput/thumbnail/\nに保存しました。")
+
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
     
@@ -813,608 +1431,11 @@ def main():
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     
-    root = tk.Tk()
-    root.title("VigStreamClip")
-    
-    # ログ表示
-    log_frame = tk.Frame(root)
-    log_frame.pack(side="bottom", fill="x")
-
-    log_widget = ScrolledText(log_frame, state='disabled', height=10)
-    log_widget.pack(fill="both", expand=True)
-
-    # stdout/stderr を GUI にリダイレクト
-    class StdoutRedirector:
-        def __init__(self, text_widget):
-            self.text_widget = text_widget
-
-        def write(self, message):
-            self.text_widget.configure(state='normal')
-            self.text_widget.insert('end', message)
-            self.text_widget.configure(state='disabled')
-            self.text_widget.yview('end')
-
-        def flush(self):
-            pass
-
-    sys.stdout = StdoutRedirector(log_widget)
-    sys.stderr = StdoutRedirector(log_widget)
-
-    # logging を GUI にも出力
-    class TextHandler(logging.Handler):
-        def __init__(self, widget):
-            super().__init__()
-            self.widget = widget
-
-        def emit(self, record):
-            msg = self.format(record)
-            def append():
-                self.widget.configure(state='normal')
-                self.widget.insert('end', msg + '\n')
-                self.widget.configure(state='disabled')
-                self.widget.yview('end')
-            self.widget.after(0, append)
-
-    # GUI用ログハンドラー
-    text_handler = TextHandler(log_widget)
-    text_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-
-    # VSCodeなどのターミナル用ログハンドラー（sys.__stdout__で直接ターミナルへ）
-    console_handler = logging.StreamHandler(sys.__stdout__)
-    console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-
-    logger = logging.getLogger()
-    logger.setLevel(logging.WARNING)
-    logger.addHandler(text_handler)
-    logger.addHandler(console_handler)
-    
-    # メニューバー追加
-    menubar = tk.Menu(root)
-    root.config(menu=menubar)
-    
-    # メニュー項目
-    #####設定#####
-    setting_menu = tk.Menu(menubar, tearoff=0)
-    menubar.add_cascade(label="設定", menu=setting_menu)
-    setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(root))
-    setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window(root))
-    setting_menu.add_command(label="題名スタイル", command=lambda: open_title_style_dialog(root))
-    setting_menu.add_separator()
-    setting_menu.add_command(label="💾 設定を保存", command=lambda: (
-    save_settings(),
-    messagebox.showinfo("保存完了", "現在の設定を保存しました。")
-    ))
-    
-    #####出力#####
-    output_menu = tk.Menu(menubar, tearoff=0)
-    menubar.add_cascade(label="出力", menu=output_menu)
-    output_menu.add_command(label="クリップ焼き直し", command=lambda: threading.Thread(target=clip_reburn_gui).start())
-    
-    frame = tk.Frame(root, padx=20, pady=20)
-    frame.pack()
-
-    state = {
-        "video_url": "",
-        "safe_title": "",
-        "raw_title": "",
-        "chat_file": "",
-        "video_file": "",
-        "x": [],
-        "y": [],
-        "x_labels": [],
-        "valleys": [],
-        "peaks": []
-    }
-
-    def update_paths_from_url():
-        url_input = entry.get().strip()
-        if not url_input:
-            messagebox.showwarning("URL未入力", "YouTubeのURLを入力してください")
-            return False
-        normalized_url = normalize_youtube_url(url_input)
-        state["video_url"] = normalized_url
-        result = subprocess.run([
-            "python", "-m", "yt_dlp", "--get-title", normalized_url
-        ], capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
-        title = result.stdout.strip()
-        if result.returncode != 0 or not title:
-            messagebox.showerror("エラー", "動画タイトルが取得できませんでした")
-            return False
-        state["raw_title"] = title
-        state["safe_title"] = re.sub(r'[\\/*?:"<>|]', "_", title)
-        output_dir = BASE_DIR / "output"
-        output_dir.mkdir(exist_ok=True)
-        state["chat_file"] = str(output_dir / f"{state['safe_title']}_chat.json")
-        state["video_file"] = str(output_dir / f"{state['safe_title']}.mp4")
-        return True
-
-    def download_chat():
-        if not update_paths_from_url():
-            return
-        if os.path.exists(state["chat_file"]):
-            messagebox.showinfo("情報", "チャットファイルは既に存在します。")
-            return
-        
-        print("チャットデータダウンロード開始・・・")
-
-        subprocess.run([
-            "python", "-m", "chat_downloader", state["video_url"],
-            "--output", state["chat_file"]
-        ])
-        messagebox.showinfo("完了", "チャットダウンロード完了！")
-
-    def download_video():
-        if not update_paths_from_url():
-            return
-
-        # 🔹 保存先フォルダを選択（ファイル名は自動決定）
-        save_dir = filedialog.askdirectory(title="保存先フォルダを選択してください")
-        if not save_dir:
-            print("⚠️ 保存がキャンセルされました。")
-            return
-        
-        print("動画ダウンロード開始・・・")
-
-        save_dir = Path(save_dir)
-
-        # 🔸 ユーザー設定解像度
-        resolution = settings.get("Resolution", "1920x1080")
-        target_width, target_height = map(int, resolution.lower().split("x"))
-
-        # 🔸 保存ファイル名（元タイトルベース）
-        base_name = state["safe_title"]
-        base_output = save_dir / f"{base_name}_1920x1080.mp4"
-        final_output = save_dir / f"{base_name}_{target_width}x{target_height}.mp4"
-
-        print("動画(1920x1080)ダウンロード中・・・")
-
-        # 🔹 yt-dlpで 1920x1080 ダウンロード
-        subprocess.run([
-            "yt-dlp",
-            "--force-overwrites",
-            "-f", "137+140",
-            "--merge-output-format", "mp4",
-            "-o", str(base_output),
-            state["video_url"]
-        ], check=True)
-        print(f"✅ 動画(1920x1080)をダウンロード完了: {base_output.name}")
-
-        # 🔹 ユーザー指定が1920x1080なら変換不要
-        if resolution == "1920x1080":
-            state["video_file"] = str(base_output)
-            messagebox.showinfo("完了", f"動画取得完了: {base_output.name}")
-            return
-
-        # 🔹 アスペクト比維持＋黒帯で中央寄せ
-        vf_filter = (
-            f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease," 
-            f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
-        )
-
-        print(f"動画(1920x1080)を使って{resolution}に編集中・・・")
-
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-i", str(base_output),
-            "-vf", vf_filter,
-            "-c:v", "h264_nvenc",
-            "-c:a", "copy",
-            str(final_output)
-        ], check=True)
-        print(f"動画({resolution})編集終了")
-
-        print(f"✅ {resolution} 動画をダウンロード完了: {base_output.name}")
-
-        state["video_file"] = str(final_output)
-        messagebox.showinfo("完了", f"変換完了: {final_output.name}")
-
-    def analyze_and_plot() -> threading.Thread:
-        def analyze():
-            if not update_paths_from_url():
-                return
-            if not os.path.exists(state["chat_file"]):
-                messagebox.showwarning("警告", "チャットファイルが存在しません。")
-                return
-            
-            # 🎥 分析する動画ファイルを選択
-            video_file = filedialog.askopenfilename(
-                title="情報分析に使う動画ファイルを選択",
-                filetypes=[("MP4 Files", "*.mp4")]
-            )
-            
-            if not video_file:
-                print(f"⚠️ 分析の為の動画選択がキャンセルされました。: {video_file}")
-                return
-            
-            print("分析を開始・・・")
-            
-            print("チャットデータを読み込み")
-            with open(state["chat_file"], "r", encoding="utf-8") as f:
-                data = json.load(f)
-            chat_counts = defaultdict(int)
-            for msg in data:
-                try:
-                    t = float(msg["time_in_seconds"])
-                    if t < 0:
-                        continue
-                    bucket = int(t // 300) * 300
-                    chat_counts[bucket] += 1
-                except (KeyError, ValueError):
-                    continue
-            x = sorted(chat_counts.keys())
-            y = [chat_counts[t] for t in x]
-            x_labels = [f"{s//3600}:{(s//60)%60:02}" for s in x]
-            valleys, peaks = [], []
-            for i in range(1, len(y) - 1):
-                t = x[i]
-                if y[i - 1] > y[i] < y[i + 1]:
-                    valleys.append(t)
-                elif y[i - 1] < y[i] > y[i + 1]:
-                    peaks.append(t)
-            state.update({"x": x, "y": y, "x_labels": x_labels, "valleys": valleys, "peaks": peaks})
-            print("チャットデータを読み込み終了")
-
-            print("動画音量(RMS)データを抽出中")
-            # --- 音量（RMS）データ抽出 ---
-            wav_file = "temp_audio.wav"
-            
-            convert_to_wav(video_file, wav_file)
-            rms_values = extract_rms_numpy(wav_file)
-            os.remove(wav_file)  # 一時ファイル削除
-            
-            # X軸は1秒ごと（動画の長さ秒分）
-            audio_x = np.arange(len(rms_values))
-            state["audio_x"] = audio_x
-            state["audio_y"] = rms_values
-            print("動画音量(RMS)データを抽出終了")
-            
-            root.after(0, draw_graph)
-
-        def draw_graph():
-            print("グラフ表示開始・・・")
-
-            plt.figure(figsize=(12, 5))
-        
-            # ① チャット数（5分毎, X軸は時:分ラベル）
-            plt.plot(state["x"], state["y"], label="チャット数", color="blue")
-            for i in range(1, len(state["y"]) - 1):
-                if state["x"][i] in state["valleys"]:
-                    plt.plot(state["x"][i], state["y"][i], 'ro')
-                elif state["x"][i] in state["peaks"]:
-                    plt.plot(state["x"][i], state["y"][i], 'bo')
-        
-            # ② 音量RMS（1秒毎, X軸は「秒」→ラベル位置にあわせて右側の軸にプロット）
-            if "audio_y" in state:
-                audio_x = state["audio_x"]  # 1秒単位 [0,1,2,...]
-                audio_y = state["audio_y"]  # RMS(dB)
-                ax1 = plt.gca()
-                ax2 = ax1.twinx()  # 右Y軸
-                ax2.plot(audio_x, audio_y, color="orange", alpha=0.5, label="音量(RMS dB)")
-                ax2.set_ylabel("音量（dB, 1秒毎）", fontname="Yu Gothic")
-        
-            plt.xticks(state["x"], state["x_labels"])
-            plt.xlabel("動画時間（時:分）")
-            plt.ylabel("チャット数（5分単位）", fontname="Yu Gothic")
-            plt.title(state["raw_title"], fontname="Yu Gothic")
-            plt.grid()
-            plt.legend(loc="upper left")
-            plt.tight_layout()
-            plt.show()
-
-        t = threading.Thread(target=analyze)
-        t.start()
-        return t  # スレッドオブジェクトを返す
-
-    def generate_segments():
-        if not state["valleys"] or not state["peaks"]:
-            print("分析を行っていなかったので分析処理を実行します。")
-            thread = analyze_and_plot()
-            thread.join() # 終わるまで待機
-
-        # 🎥 元動画ファイルを選択
-        video_file = filedialog.askopenfilename(
-            title="セグメント生成に使う動画ファイルを選択",
-            filetypes=[("MP4 Files", "*.mp4")]
-        )
-        if not video_file:
-            print("⚠️ 動画ファイルが選択されませんでした。処理を中止します。")
-            return
-        
-        print("セグメント生成開始・・・")
-
-        # 💾 保存先は固定
-        SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
-
-        BUFFER = 300
-        segment_count = 1
-        for v_sec in state["valleys"]:
-            next_peaks = [p for p in state["peaks"] if p > v_sec]
-            if not next_peaks:
-                continue
-            p_sec = next_peaks[0]
-            start = max(0, v_sec - BUFFER)
-            end = p_sec + BUFFER
-            duration = end - start
-
-            segment_path = SEGMENT_DIR / f"segment_{segment_count:02}.mp4"
-            subprocess.run([
-                "ffmpeg", "-ss", str(timedelta(seconds=start)),
-                "-i", video_file,
-                "-t", str(timedelta(seconds=duration)),
-                "-c", "copy", str(segment_path)
-            ])
-            segment_count += 1
-
-        messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {SEGMENT_DIR}")
-
-    def generate_clips_from_folder():
-        folder = filedialog.askdirectory(title="セグメントフォルダを選択")
-        if not folder:
-            print("⚠️ セグメントフォルダが選択されませんでした。処理を中止します。")
-            return
-    
-        def run():
-            print(f"📁 セグメントフォルダ: {folder}")
-            for segment_file in Path(folder).glob("segment_*.mp4"):
-                print(f"🎞️ セグメント処理開始: {segment_file.name}")
-                try:
-                    result = whisper_model.transcribe(str(segment_file), language="ja", task="transcribe")
-                    segments = result["segments"]
-                    print(f"📝 字幕セグメント数: {len(segments)}")
-                    clips = group_segments_by_duration(segments, MIN_DURATION, MAX_DURATION)
-                    print(f"📌 抽出されたクリップ数: {len(clips)}")
-                    output_dir = OUTPUT_BASE_DIR / segment_file.stem
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    for i, clip in enumerate(clips):
-                        print(f"🔧 クリップ生成: clip_{i} [{clip.start_time:.2f}s - {clip.end_time:.2f}s]")
-                        export_clip(i, clip, segment_file, output_dir)
-                except Exception as e:
-                    print(f"❌ {segment_file.name} の処理に失敗しました: {e}")
-            print("✅ フォルダ内すべてのセグメント処理が完了しました")
-            root.after(0, lambda: messagebox.showinfo("完了", "フォルダ内セグメントのクリップ生成が完了しました"))
-    
-        threading.Thread(target=run).start()
-
-    def generate_clips_from_file():
-        filepath = filedialog.askopenfilename(filetypes=[("MP4 Files", "*.mp4")])
-        if not filepath:
-            print("⚠️ ファイルが選択されませんでした。処理を中止します。")
-            return
-
-        def run():
-            file = Path(filepath)
-            print(f"🎬 ファイル処理開始: {file.name}")
-            try:
-                result = whisper_model.transcribe(str(file), language="ja", task="transcribe")
-                segments = result["segments"]
-                print(f"📝 字幕セグメント数: {len(segments)}")
-                clips = group_segments_by_duration(segments, MIN_DURATION, MAX_DURATION)
-                print(f"📌 抽出されたクリップ数: {len(clips)}")
-                output_dir = OUTPUT_BASE_DIR / file.stem
-                output_dir.mkdir(parents=True, exist_ok=True)
-                for i, clip in enumerate(clips):
-                    print(f"🔧 クリップ生成: clip_{i} [{clip.start_time:.2f}s - {clip.end_time:.2f}s]")
-                    export_clip(i, clip, file, output_dir)
-            except Exception as e:
-                print(f"❌ ファイル {file.name} の処理に失敗しました: {e}")
-            print("✅ ファイルのクリップ生成が完了しました")
-            root.after(0, lambda: messagebox.showinfo("完了", "ファイルのクリップ生成が完了しました"))
-
-        threading.Thread(target=run).start()
-    
-    def extract_valley_peak_pairs(valleys, peaks):
-        # 時間順に並んだ山谷をまとめる
-        points = []
-        for t in valleys:
-            points.append(("valley", t))
-        for t in peaks:
-            points.append(("peak", t))
-        points.sort(key=lambda x: x[1])  # 時間でソート
-
-        pairs = []
-        prev_valley = None
-        for kind, t in points:
-            if kind == "valley":
-                prev_valley = t
-            elif kind == "peak" and prev_valley is not None and t > prev_valley:
-                pairs.append((prev_valley, t))
-                prev_valley = None  # 次のvalleyまで待つ
-        return pairs
-    
-    def get_text_size(text, font):
-        if hasattr(font, "getbbox"):
-            bbox = font.getbbox(text)
-            width = bbox[2] - bbox[0]
-            height = bbox[3] - bbox[1]
-            return width, height
-        else:
-            return font.getsize(text)
-    
-    def wrap_title_text(text, font, max_width):
-        """
-        1行の横幅がmax_widthを超えないよう自動改行した行リストを返す
-        """
-        lines = []
-        line = ""
-        for char in text:
-            test_line = line + char
-            w, _ = get_text_size(test_line, font)
-            if w > max_width and line:
-                lines.append(line)
-                line = char
-            else:
-                line = test_line
-        if line:
-            lines.append(line)
-        return lines
-    
-    def calc_title_position(img, lines, font, settings):
-        """
-        settings: TitleAreaX, TitleAreaY, TitleAreaWidth, TitleAreaHeight, TitleAlignV, TitleAlignH
-        lines: wrap_textで作成した行リスト
-        """
-        x0 = settings.get("TitleAreaX", 0)
-        y0 = settings.get("TitleAreaY", 0)
-        area_w = settings.get("TitleAreaWidth", img.width)
-        area_h = settings.get("TitleAreaHeight", img.height // 3)
-        align_v = settings.get("TitleAlignV", "top")
-        align_h = settings.get("TitleAlignH", "center")
-
-        # 1行の高さ
-        _, line_h = get_text_size("あ", font)
-        total_h = line_h * len(lines)
-
-        # 垂直位置
-        if align_v == "top":
-            y = y0
-        elif align_v == "center":
-            y = y0 + (area_h - total_h) // 2
-        elif align_v == "bottom":
-            y = y0 + (area_h - total_h)
-        else:
-            y = y0
-
-        return x0, y, area_w, align_h, line_h
-    
-    def draw_title_on_img(img, title, font, settings):
-        draw = ImageDraw.Draw(img)
-        area_w = settings.get("TitleAreaWidth", img.width)
-        # ラップ
-        lines = wrap_title_text(title, font, area_w)
-        # 位置
-        x0, y, area_w, align_h, line_h = calc_title_position(img, lines, font, settings)
-
-        for line in lines:
-            text_w, _ = get_text_size(line, font)
-            # 水平
-            if align_h == "left":
-                x = x0
-            elif align_h == "center":
-                x = x0 + (area_w - text_w) // 2
-            elif align_h == "right":
-                x = x0 + (area_w - text_w)
-            else:
-                x = x0
-            # 影
-            draw.text((x+2, y+2), line, font=font, fill=(0,0,0,128))
-            # 本体
-            draw.text((x, y), line, font=font, fill=(255,255,255,255))
-            y += line_h
-        return img
-    
-    def generate_all_thumbnails_gui():
-        mp4_path = filedialog.askopenfilename(
-            title="サムネイル生成する元動画ファイルを選択",
-            filetypes=[("MP4ファイル", "*.mp4")]
-        )
-        if not mp4_path:
-            print("❌ 動画ファイルが選択されませんでした")
-            return
-
-        # ▼ サムネイル題名スタイル設定の取得（なければデフォルト）
-        title_font_name = settings.get("TitleFont", "Yu Gothic")
-        title_font_size = settings.get("TitleFontSize", 120)
-        area_x = settings.get("TitleAreaX", 0)
-        area_y = settings.get("TitleAreaY", 0)
-        area_w = settings.get("TitleAreaWidth")
-        area_h = settings.get("TitleAreaHeight")
-        align_v = settings.get("TitleAlignV", "top")    # "top", "center", "bottom"
-        align_h = settings.get("TitleAlignH", "center") # "left", "center", "right"
-        font_path = CUSTOM_FONT_PATHS.get(title_font_name)
-
-        video_path = Path(mp4_path)
-        valleys = state.get("valleys")
-        peaks = state.get("peaks")
-        audio_y = state.get("audio_y")
-        title = state.get("raw_title", video_path.stem)
-
-        if not valleys or not peaks or not audio_y:
-            messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
-            return
-
-        # output/thumbnail フォルダ作成
-        thumbnail_dir = BASE_DIR / "output" / "thumbnail"
-        thumbnail_dir.mkdir(parents=True, exist_ok=True)
-
-        pairs = extract_valley_peak_pairs(valleys, peaks)
-
-        for idx, (start_sec, end_sec) in enumerate(pairs, 1):  # 1から開始
-            if end_sec > len(audio_y):
-                print(f"⚠️ 区間{idx}: end_sec={end_sec}が音量データ範囲外です。スキップ")
-                continue
-            segment_rms = audio_y[start_sec:end_sec+1]
-            if not segment_rms:
-                print(f"⚠️ 区間{idx}: 区間内音量データなし。スキップ")
-                continue
-
-            rel_max_idx = int(np.argmax(segment_rms))
-            abs_max_sec = start_sec + rel_max_idx
-
-            # サムネイルファイル名例: 元動画名_segment01_thumbnail.jpg
-            base_name = f"{video_path.stem}_segment{idx:02}_thumbnail"
-            thumbnail_base_pattern = thumbnail_dir / (base_name + "_base_%d.jpg")  # ffmpeg出力パターン
-            thumbnail_base_file = thumbnail_dir / (base_name + "_base_1.jpg")      # 実際の出力ファイル
-            output_thumbnail = thumbnail_dir / (base_name + ".jpg")
-
-            try:
-                subprocess.run([
-                    "ffmpeg", "-y",
-                    "-ss", str(abs_max_sec),
-                    "-i", str(video_path),
-                    "-frames:v", "1",
-                    "-q:v", "2",
-                    str(thumbnail_base_pattern)
-                ], check=True)
-
-                img = Image.open(thumbnail_base_file)
-
-                # フォントインスタンス作成
-                try:
-                    if font_path:
-                        font = ImageFont.truetype(font_path, title_font_size)
-                    else:
-                        font = ImageFont.truetype("arial.ttf", title_font_size)
-                except Exception:
-                    font = ImageFont.load_default()
-
-                # 描画エリア
-                use_area_w = area_w if area_w else img.width
-                use_area_h = area_h if area_h else img.height // 3
-
-                # 設定まとめ
-                settings_for_pos = {
-                    "TitleAreaX": area_x,
-                    "TitleAreaY": area_y,
-                    "TitleAreaWidth": use_area_w,
-                    "TitleAreaHeight": use_area_h,
-                    "TitleAlignV": align_v,
-                    "TitleAlignH": align_h,
-                }
-
-                # ここで draw_title_on_img を使う！
-                img = draw_title_on_img(img, title, font, settings_for_pos)
-
-                img.save(output_thumbnail)
-                thumbnail_base_file.unlink(missing_ok=True)
-                print(f"✅ サムネイル生成: {output_thumbnail}")
-            except Exception as e:
-                print(f"❌ サムネイル生成失敗: segment{idx} {e}")
-
-        messagebox.showinfo("完了", f"すべてのサムネイル画像を\noutput/thumbnail/\nに保存しました。")
-
-    label = tk.Label(frame, text="YouTube動画URLを入力:")
-    label.pack()
-    entry = tk.Entry(frame, width=70)
-    entry.pack(pady=5)
-    tk.Button(frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat).start()).pack(pady=5)
-    tk.Button(frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video).start()).pack(pady=5)
-    tk.Button(frame, text="📊 分析してグラフを表示", command=analyze_and_plot).pack(pady=5)
-    tk.Button(frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5)
-    tk.Button(frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder).start()).pack(pady=5)
-    tk.Button(frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file).start()).pack(pady=5)
-    tk.Button(frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5)
-
-    root.mainloop()
+    app = App()
+    app.setup("VigStreamClip")
+
+    # アプリケーションの実行処理
+    app.run()
 
 if __name__ == "__main__":
     main()
