@@ -26,6 +26,7 @@ from tkinter.scrolledtext import ScrolledText
 import numpy as np
 import soundfile as sf
 from PIL import Image, ImageDraw, ImageFont
+import tempfile
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -171,8 +172,8 @@ class App:
         tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video(self)).start()).pack(pady=5)
         tk.Button(self.frame, text="📊 分析してグラフを表示", command=lambda: analyze_and_plot(self)).pack(pady=5)
         tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments(self)).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder(self.root)).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file(self.root)).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder(self)).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file(self)).start()).pack(pady=5)
         tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui(self)).start()).pack(pady=5)
     
     def setup_menu(self):
@@ -514,17 +515,6 @@ def convert_color_tags_to_ass(text: str) -> str:
 
     return converted
 
-# 動画に字幕を差し込んで生成
-def generate_subtitles_to_video(input_video: Path, input_srt: Path, output_video: Path):
-    subtitle_filter = generate_subtitle_filter(input_srt)
-    subprocess.run([
-        "ffmpeg", "-y", "-i", str(input_video),
-        "-vf", subtitle_filter,
-        "-c:v", "h264_nvenc",
-        "-c:a", "copy",
-        str(output_video)
-    ], check=True)
-
 # 長い字幕を自動で適切な長さに分割
 def split_long_subtitle(text: str, max_chars: int) -> list:
     """長い字幕テキストを句読点・読点・スペースなどで自然に分割"""
@@ -540,27 +530,150 @@ def split_long_subtitle(text: str, max_chars: int) -> list:
         blocks.append(buf.strip())
     return blocks
 
-def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
+def generate_comment_to_png_sequence(
+    comments,        # チャットデータ（dictリスト）
+    video_size,      # (幅, 高さ)
+    out_frames_dir,  # PNG保存先ディレクトリ
+    start_time,      # クリップの開始秒数
+    end_time,        # クリップの終了秒数
+    fps=30,
+    duration_per_comment=3.0,
+    font_path=None
+):
+    W, H = video_size
+    frame_count = int((end_time - start_time) * fps)
+    font = ImageFont.truetype(font_path or "arial.ttf", 36)
+    num_tracks = 12
+    track_height = H // (num_tracks + 2)
+    tracks = [track_height * (i+1) for i in range(num_tracks)]
+    danmaku = []
+    for i, c in enumerate(comments):
+        t0 = float(c["time_in_seconds"]) - start_time
+        if 0 <= t0 < (end_time - start_time):
+            y = tracks[i % num_tracks]
+            danmaku.append({
+                "text": c["message"],
+                "start": t0,
+                "y": y,
+            })
+    out_frames_dir = Path(out_frames_dir)
+    out_frames_dir.mkdir(parents=True, exist_ok=True)
+    for f in range(frame_count):
+        t = f / fps
+        img = Image.new("RGBA", (W, H), (0,0,0,0))
+        draw = ImageDraw.Draw(img)
+        for d in danmaku:
+            appear = d["start"]
+            if appear <= t < appear + duration_per_comment:
+                bbox = draw.textbbox((0, 0), d["text"], font=font)
+                w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                progress = (t - appear) / duration_per_comment
+                x = int(W - (W + w) * progress)
+                draw.text((x, d["y"]), d["text"], font=font, fill=(255,255,255,255))
+        img.save(str(out_frames_dir / f"danmaku_{f:04d}.png"))
+
+def combine_video_with_danmaku_overlay(
+    clip_path: Path,
+    frames_dir: Path,
+    out_path: Path,
+    fps: int = 30
+):
+    # frames_dir 内に danmaku_%04d.png
+    frames_pattern = str(frames_dir / "danmaku_%04d.png")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(clip_path),
+        "-framerate", str(fps),
+        "-i", frames_pattern,
+        "-filter_complex", "[0:v][1:v]overlay=shortest=1:format=auto",
+        "-c:v", "h264_nvenc",
+        "-c:a", "copy",
+        str(out_path)
+    ]
+    subprocess.run(cmd, check=True)
+
+def extract_comments_for_clip(chat_json_path, start_time, end_time):
+    with open(chat_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return [
+        msg for msg in data
+        if start_time <= float(msg.get("time_in_seconds", -1)) < end_time
+        and msg.get("message")
+    ]
+
+def generate_video(
+    danmaku_video: Path,    # ここで弾幕動画をinputとする
+    srt_path: Path,
+    output_path: Path,
+    style_str: str = None
+):
+    if not style_str:
+        s = settings
+        font_name = s["Font"]
+        style_str = (
+            f"FontName={escape_font_name(font_name)},"
+            f"FontSize={s['FontSize']},"
+            f"PrimaryColor={s['PrimaryColor']},"
+            f"Outline={s['Outline']},"
+            f"OutlineColor={s['OutlineColor']},"
+            f"Shadow={s['Shadow']},"
+            f"MarginV={s['MarginV']},"
+            f"Alignment={s['Alignment']}"
+        )
+
+    # 弾幕動画に直接字幕を合成
+    filter_complex = (
+        f"subtitles='{escape_ffmpeg_path(srt_path)}:force_style={style_str}'"
+    )
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", str(danmaku_video),
+        "-filter_complex", filter_complex,
+        "-c:v", "h264_nvenc",
+        str(output_path)
+    ], check=True)
+
+def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat_json_path: Path):
     """
-    クリップ動画の出力
-    Args:
-        index (int): クリップ番号
-        clip (Clip): クリップデータ
-        video_path (Path): クリップ元動画のパス
-        output_dir (Path): クリップ動画の出力先パス
+    クリップ動画＋字幕生成＋弾幕生成＋合成
+    セグメントの絶対秒(start_sec, end_sec)は毎回 segment_info.json からファイル名で検索して取得する。
     """
-    # clipごとのサブフォルダを作成
+
+    # ▼ セグメント情報(絶対秒)を segment_info.json から取得
+    segment_info_path = SEGMENT_DIR / "segment_info.json"
+    if not segment_info_path.exists():
+        print(f"❌ segment_info.json が見つかりません: {segment_info_path}")
+        return
+
+    with open(segment_info_path, "r", encoding="utf-8") as f:
+        segment_meta = json.load(f)
+    my_info = next((item for item in segment_meta if item["file"] == video_path.name), None)
+    if my_info is None:
+        print(f"❌ {video_path.name} の開始・終了秒情報が segment_info.json に見つかりません")
+        return
+
+    segment_start_time = my_info["start_sec"]
+    segment_end_time = my_info["end_sec"]
+
+    # clip: 相対（このセグメントの0秒～X秒）→ 配信全体での絶対秒数
+    abs_start = segment_start_time + clip.start_time
+    abs_end = segment_start_time + clip.end_time
+
+    # クリップごとの作業ディレクトリ
     clip_dir = output_dir / f"clip_{index}"
     clip_dir.mkdir(parents=True, exist_ok=True)
 
+    # 各ファイルパス
     clip_path = clip_dir / f"clip_{index}.mp4"
     srt_path = clip_dir / f"clip_{index}.srt"
     raw_srt_path = clip_dir / f"clip_{index}_raw.srt"
     diff_path = clip_dir / f"clip_{index}_diff.txt"
-    subtitled_path = clip_dir / f"clip_{index}_subtitled.mp4"
     structure_path = clip_dir / f"clip_{index}_structure.json"
+    frames_dir = clip_dir / "danmaku_frames"  # PNG連番保存用
+    overlay_output = clip_dir / f"clip_{index}_danmaku.mp4"
+    final_output = clip_dir / f"clip_{index}_final.mp4"
 
-    # ① 動画を切り出し
+    # ① クリップ切り出し（この関数内の動画は相対秒でOK）
     subprocess.run([
         "ffmpeg", "-y",
         "-ss", str(clip.start_time),
@@ -574,15 +687,11 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
     # ② Whisperで字幕セグメント取得
     result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe")
     segments = result["segments"]
-    
-    # 🧼 Whisper結果が空なら中断
     if not segments:
         print(f"⚠️ Whisperのセグメントが空です: {clip_path.name}")
         return
-    
-    # 🧼 重複フィルターを適用
-    segments = remove_redundant_segments(segments)
 
+    segments = remove_redundant_segments(segments)
     if not any(seg["text"].strip() for seg in segments):
         clip_path.unlink(missing_ok=True)
         return
@@ -595,38 +704,29 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
             text = seg["text"].strip()
             f.write(f"{i+1}\n{start} --> {end}\n{text}\n\n")
 
-    # ④ ChatGPTで誤字脱字のみ修正
+    # ④ ChatGPTで誤字脱字修正
     corrected = call_gpt_proofread_segments(segments)
 
-    # 字幕用 max_width を設定に応じて計算
+    # 字幕max_width計算
     font_name = settings.get("Font", "Yu Gothic")
     font_size = settings.get("FontSize", 24)
     resolution = get_video_resolution(clip_path)
     max_width = estimate_max_width(resolution, font_name, font_size)
-    
-    print(f"[export_clip]max_width:{max_width}")
 
-    # ⑤ 校閲済み字幕を srt に保存（SRT出力時、時刻も分割する）
+    # ⑤ 校閲済み字幕を srt に保存
     with open(srt_path, "w", encoding="utf-8") as f:
         entry_num = 1
         for i, corr in enumerate(corrected):
             seg = segments[corr["index"]]
             seg_start = seg["start"]
             seg_end = seg["end"]
-
             blocks = split_long_subtitle(corr['text'], max_width)
             if not blocks:
                 blocks = [corr['text']]
             block_count = len(blocks)
-
-            # 1ブロックあたりの秒数
             total_duration = seg_end - seg_start
-            if block_count == 0:
-                block_count = 1
-            duration_per_block = total_duration / block_count
-
+            duration_per_block = total_duration / block_count if block_count > 0 else total_duration
             for b_idx, b in enumerate(blocks):
-                # 各ブロックの時間を計算
                 block_start = seg_start + duration_per_block * b_idx
                 block_end = seg_start + duration_per_block * (b_idx + 1)
                 start_str = format_timestamp(block_start)
@@ -634,7 +734,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
                 f.write(f"{entry_num}\n{start_str} --> {end_str}\n{b}\n\n")
                 entry_num += 1
 
-    # ⑥ 差分ログを出力
+    # ⑥ 差分ログ出力
     with open(diff_path, "w", encoding="utf-8") as f:
         f.write("📝 修正ログ（インデックスごとの差分）\n\n")
         for corr in corrected:
@@ -643,18 +743,49 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path):
             if original != corrected_text:
                 f.write(f"[{corr['index']}]\nBefore: {original}\nAfter:  {corrected_text}\n\n")
 
-    # ⑦ ChatGPTで段落構造を生成（クリップ判定用に別途保持）
+    # ⑦ ChatGPTで段落構造を生成
     structure = call_gpt_group_segments(segments)
     if structure:
         with open(structure_path, "w", encoding="utf-8") as f:
             json.dump(structure, f, ensure_ascii=False, indent=2)
-    
-    font_name = settings.get("Font", "Yu Gothic")
-    font_size = settings.get("Font", 24)
 
-    # ⑧ 字幕を焼き込み
-    generate_subtitles_to_video(clip_path, srt_path, subtitled_path)
+    # ⑧ チャットデータから該当区間コメント抽出（配信全体での絶対秒数）
+    comments = extract_comments_for_clip(
+        chat_json_path, abs_start, abs_end
+    )
 
+    # ⑨ 弾幕PNG連番生成
+    video_resolution = get_video_resolution(clip_path)
+    w, h = map(int, video_resolution.split("x"))
+    font_path = CUSTOM_FONT_PATHS.get(settings.get("Font"), None)
+    fps = 30
+    generate_comment_to_png_sequence(
+        comments,
+        video_size=(w, h),
+        out_frames_dir=frames_dir,
+        start_time=clip.start_time,    # このクリップ内での相対秒
+        end_time=clip.end_time,
+        fps=fps,
+        duration_per_comment=3.0,
+        font_path=font_path
+    )
+
+    # ⑩ 本編＋弾幕PNG連番 overlay合成
+    combine_video_with_danmaku_overlay(
+        clip_path=clip_path,
+        frames_dir=frames_dir,
+        out_path=overlay_output,
+        fps=fps
+    )
+
+    # ⑪ overlay合成後の動画に字幕焼き付け
+    generate_video(
+        danmaku_video=overlay_output,
+        srt_path=srt_path,
+        output_path=final_output
+    )
+
+    print(f"✅ 字幕＋弾幕 合成クリップ生成: {final_output}")
 
 def normalize_youtube_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
@@ -844,7 +975,7 @@ def open_title_style_dialog(root: tk.Tk):
 
 # 字幕の焼き直し
 def clip_reburn_gui():
-    # ユーザーにMP4とSRTを選ばせる
+    # 元MP4
     mp4_path = filedialog.askopenfilename(
         title="焼き直すMP4ファイルを選択",
         filetypes=[("MP4ファイル", "*.mp4")]
@@ -853,23 +984,36 @@ def clip_reburn_gui():
         print("❌ MP4ファイルが選択されませんでした")
         return
 
+    # 字幕
     srt_path = filedialog.askopenfilename(
         title="対応するSRT字幕ファイルを選択",
-        filetypes=[("字幕ファイル", "*.srt")]
+        filetypes=[("字幕ファイル", "*.srt *.ass")]
     )
     if not srt_path:
-        print("❌ SRTファイルが選択されませんでした")
+        print("❌ 字幕ファイルが選択されませんでした")
         return
 
-    mp4 = Path(mp4_path)
-    srt = Path(srt_path)
-    out = mp4.with_name(mp4.stem + "_subtitled.mp4")
+    # 弾幕mp4
+    danmaku_path = filedialog.askopenfilename(
+        title="重ねる弾幕動画（danmaku.mp4）を選択",
+        filetypes=[("MP4ファイル", "*.mp4")]
+    )
+    if not danmaku_path:
+        print("❌ 弾幕動画が選択されませんでした")
+        return
+
+    # 出力名決定
+    out = Path(mp4_path).with_name(Path(mp4_path).stem + "_subtitled_danmaku.mp4")
 
     try:
-        generate_subtitles_to_video(mp4, srt, out)
-        messagebox.showinfo("完了", f"字幕の焼き直しが完了しました！\n出力: {out.name}")
+        generate_video(
+            danmaku_video=Path(danmaku_path),
+            srt_path=Path(srt_path),
+            output_path=out
+        )
+        messagebox.showinfo("完了", f"字幕＋弾幕の焼き直しが完了しました！\n出力: {out.name}")
     except Exception as e:
-        messagebox.showerror("エラー", f"字幕焼き直しに失敗しました:\n{e}")
+        messagebox.showerror("エラー", f"字幕＋弾幕焼き直しに失敗しました:\n{e}")
 
 # 字幕生成のフィルター設定を生成
 def generate_subtitle_filter(srt_path: Path) -> str:
@@ -927,7 +1071,7 @@ def extract_rms_numpy(wav_file):
     return rms_values
 
 ##### クリップ #####
-def generate_clips_from_folder(root: tk.Tk):
+def generate_clips_from_folder(app: App):
         """
         セグメント動画フォルダ指定してクリップ動画を生成する
         """
@@ -935,16 +1079,19 @@ def generate_clips_from_folder(root: tk.Tk):
         if not segment_dir_path:
             print("⚠️ セグメントフォルダが選択されませんでした。処理を中止します。")
             return
+        
+        if update_paths_from_url(app) == False:
+            return
     
         def run():
             print(f"📁 フォルダ選択でクリップ動画の生成を開始します・・・: {segment_dir_path}")
             for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
-                generate_clips(segment_file_path)
-            root.after(0, lambda: messagebox.showinfo("完了", "フォルダ指定のクリップ動画生成が完了しました"))
+                generate_clips(segment_file_path, app)
+            app.root.after(0, lambda: messagebox.showinfo("完了", "フォルダ指定のクリップ動画生成が完了しました"))
     
         threading.Thread(target=run).start()
 
-def generate_clips_from_file(root: tk.Tk):
+def generate_clips_from_file(app: App):
     """
     セグメント動画ファイル指定してクリップ動画を生成する
     """
@@ -952,13 +1099,17 @@ def generate_clips_from_file(root: tk.Tk):
     if not segment_file_path:
         print("⚠️ ファイルが選択されませんでした。処理を中止します。")
         return
+    
+    if update_paths_from_url(app) == False:
+        return
+    
     def run():
         print(f"🎬 ファイル選択でクリップ動画の生成を開始します・・・: {segment_file_path}")
-        generate_clips(Path(segment_file_path))
-        root.after(0, lambda: messagebox.showinfo("完了", "ファイル指定のクリップ動画生成が完了しました"))
+        generate_clips(Path(segment_file_path), app)
+        app.root.after(0, lambda: messagebox.showinfo("完了", "ファイル指定のクリップ動画生成が完了しました"))
     threading.Thread(target=run).start()
     
-def generate_clips(segment_path: Path):
+def generate_clips(segment_path: Path, app: App):
     """
     指定セグメント動画からクリップ動画生成する
     Args:
@@ -966,6 +1117,25 @@ def generate_clips(segment_path: Path):
     """
     print(f"🎬 クリップ動画生成開始・・・: {segment_path.name}")
     try:
+        # ▼ segment_info.json 参照
+        segment_info_path = SEGMENT_DIR / "segment_info.json"
+        if not segment_info_path.exists():
+            print(f"❌ segment_info.json が見つかりません: {segment_info_path}")
+            return
+
+        with open(segment_info_path, "r", encoding="utf-8") as f:
+            segment_meta = json.load(f)
+        # segment_path.name と一致する情報を得る
+        my_info = next((item for item in segment_meta if item["file"] == segment_path.name), None)
+        if my_info is None:
+            print(f"❌ {segment_path.name} の開始・終了秒情報が segment_info.json に見つかりません")
+            return
+
+        segment_start_time = my_info["start_sec"]
+        segment_end_time = my_info["end_sec"]
+        print(f"🔗 このセグメントは元配信の {segment_start_time}s ~ {segment_end_time}s 区間です")
+
+        # --- 以降は従来どおり ---
         result = whisper_model.transcribe(str(segment_path), language="ja", task="transcribe")
         segments = result["segments"]
         print(f"📝 字幕セグメント数: {len(segments)}")
@@ -973,9 +1143,18 @@ def generate_clips(segment_path: Path):
         print(f"📌 抽出されたクリップ数: {len(clips)}")
         output_dir = OUTPUT_BASE_DIR / segment_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        stream_title = app.stream_analysis.safe_title
+        if not stream_title:
+            print("❌ stream_titleが空です。動画分析またはURL入力を先に実行してください。")
+            return
+        chat_json_path = BASE_DIR / "output" / f"{stream_title}_chat.json"
+        
         for i, clip in enumerate(clips):
             print(f"🔧 クリップ生成: clip_{i} [{clip.start_time:.2f}s - {clip.end_time:.2f}s]")
-            export_clip(i, clip, segment_path, output_dir)
+            # ここで segment_start_time を使えば「配信全体での絶対秒数」も計算できる
+            # 例: clip_abs_start = segment_start_time + clip.start_time
+            export_clip(i, clip, segment_path, output_dir, chat_json_path)
     except Exception as e:
         print(f"❌ ファイル {segment_path.name} の処理に失敗しました: {e}")
     print("✅ クリップ動画生成が完了しました")
@@ -1189,9 +1368,9 @@ def generate_segments(app: App):
     
     if not app.stream_analysis.valleys or not app.stream_analysis.peaks:
         print("分析を行っていなかったので分析処理を実行します。")
-        thread = analyze_and_plot()
+        thread = analyze_and_plot(app)
         thread.join() # 終わるまで待機
-    # 🎥 元動画ファイルを選択
+
     video_file = filedialog.askopenfilename(
         title="セグメント生成に使う動画ファイルを選択",
         filetypes=[("MP4 Files", "*.mp4")]
@@ -1201,17 +1380,16 @@ def generate_segments(app: App):
         return
     
     print("セグメント生成開始・・・")
-    # 💾 保存先は固定
     SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
     BUFFER = 300
     segment_count = 1
-    for v_sec in app.stream_analysis.valleys:
-        next_peaks = [p for p in app.stream_analysis.peaks if p > v_sec]
-        if not next_peaks:
-            continue
-        p_sec = next_peaks[0]
-        start = max(0, v_sec - BUFFER)
-        end = p_sec + BUFFER
+    segment_meta = []
+
+    # ▼ valley-peakペアで各セグメント動画生成＋区間情報記録
+    pairs = extract_valley_peak_pairs(app.stream_analysis.valleys, app.stream_analysis.peaks)
+    for start_valley, peak in pairs:
+        start = max(0, start_valley - BUFFER)
+        end = peak + BUFFER
         duration = end - start
         segment_path = SEGMENT_DIR / f"segment_{segment_count:02}.mp4"
         subprocess.run([
@@ -1220,7 +1398,17 @@ def generate_segments(app: App):
             "-t", str(timedelta(seconds=duration)),
             "-c", "copy", str(segment_path)
         ])
+        segment_meta.append({
+            "segment_index": segment_count,
+            "file": f"segment_{segment_count:02}.mp4",
+            "start_sec": int(start),
+            "end_sec": int(end)
+        })
         segment_count += 1
+
+    # ▼ segment_info.json 保存
+    with open(SEGMENT_DIR / "segment_info.json", "w", encoding="utf-8") as f:
+        json.dump(segment_meta, f, ensure_ascii=False, indent=2)
     messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {SEGMENT_DIR}")
     
 def extract_valley_peak_pairs(valleys, peaks):
