@@ -540,8 +540,11 @@ def generate_comment_to_png_sequence(
     duration_per_comment=3.0,
     font_path=None
 ):
-    W, H = video_size
     frame_count = int((end_time - start_time) * fps)
+    print(f"受け取ったコメント数: {len(comments)}")
+    print(f"動画サイズ: {video_size}")
+    print(f"開始: {start_time}, 終了: {end_time}, フレーム数: {frame_count}")
+    W, H = video_size
     font = ImageFont.truetype(font_path or "arial.ttf", 36)
     num_tracks = 12
     track_height = H // (num_tracks + 2)
@@ -556,6 +559,7 @@ def generate_comment_to_png_sequence(
                 "start": t0,
                 "y": y,
             })
+    print(f"danmakuに格納されたコメント数: {len(danmaku)}")
     out_frames_dir = Path(out_frames_dir)
     out_frames_dir.mkdir(parents=True, exist_ok=True)
     for f in range(frame_count):
@@ -570,6 +574,7 @@ def generate_comment_to_png_sequence(
                 progress = (t - appear) / duration_per_comment
                 x = int(W - (W + w) * progress)
                 draw.text((x, d["y"]), d["text"], font=font, fill=(255,255,255,255))
+                #print(f"{f}: {d['text']} を ({x},{d['y']}) に描画")
         img.save(str(out_frames_dir / f"danmaku_{f:04d}.png"))
 
 def combine_video_with_danmaku_overlay(
@@ -753,6 +758,8 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     comments = extract_comments_for_clip(
         chat_json_path, abs_start, abs_end
     )
+    print(f"abs_start: {abs_start}, abs_end: {abs_end}")
+    print(f"comments件数: {len(comments)}")  # ←追加
 
     # ⑨ 弾幕PNG連番生成
     video_resolution = get_video_resolution(clip_path)
@@ -763,8 +770,8 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
         comments,
         video_size=(w, h),
         out_frames_dir=frames_dir,
-        start_time=clip.start_time,    # このクリップ内での相対秒
-        end_time=clip.end_time,
+        start_time=abs_start,
+        end_time=abs_end,
         fps=fps,
         duration_per_comment=3.0,
         font_path=font_path
