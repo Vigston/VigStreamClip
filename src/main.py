@@ -27,6 +27,7 @@ import numpy as np
 import soundfile as sf
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
+from pydub import AudioSegment, silence
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -258,27 +259,39 @@ def load_api_key_from_file() -> str:
     with open(key_path, "r", encoding="utf-8") as f:
         return f.readline().strip()
 
-def group_segments_by_duration(segments: List[dict], min_dur: int, max_dur: int) -> List[Clip]:
+def group_segments_by_duration(
+    segments: List[dict],
+    min_dur: int,
+    max_dur: int,
+    silence_gap: float = 1.0
+) -> List[Clip]:
+    """
+    無音区間（Whisperセグメント間gap）がsilence_gap以上あるときに分割。
+    実際に「何も喋っていない時間」は字幕ブロックが発生しない。
+    """
     clips = []
+    n = len(segments)
+    i = 0
 
-    # 最初のセグメントは必ず無視する（＝発話途中の可能性がある）
-    i = 1
-    while i < len(segments):
+    while i < n:
         current_start = segments[i]["start"]
         current_end = segments[i]["end"]
-        i += 1
 
-        while i < len(segments):
-            duration = segments[i]["end"] - current_start
-            if duration < max_dur:
-                current_end = segments[i]["end"]
-                i += 1
-            else:
+        # 次のセグメントとつなげられるか
+        j = i + 1
+        while j < n:
+            gap = segments[j]["start"] - current_end
+            duration = segments[j]["end"] - current_start
+            if gap >= silence_gap or duration >= max_dur:
                 break
+            current_end = segments[j]["end"]
+            j += 1
 
+        # 必要に応じてmin_durチェック
         clip_duration = current_end - current_start
         if clip_duration >= min_dur:
             clips.append(Clip(start_time=current_start, end_time=current_end))
+        i = j
 
     return clips
 
@@ -417,6 +430,37 @@ def remove_redundant_segments(segments: List[dict], max_repeat: int = 2) -> List
             print(f"⚠️ 重複セグメントをスキップ: {text} [{seg['start']} ~ {seg['end']}]")
 
     return filtered_segments
+
+def adjust_segment_ends(audio_file, segments, min_silence_len=1000, silence_thresh=-40):
+    """
+    各セグメントの末尾無音を検知し、喋りが終わったタイミングでendを短縮する
+    """
+    # mp4→wav変換
+    wav_file = str(Path(tempfile.gettempdir()) / "temp_clip.wav")
+    subprocess.run([
+        "ffmpeg", "-y", "-i", audio_file,
+        "-ac", "1", "-ar", "16000",
+        wav_file
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    audio = AudioSegment.from_file(wav_file)
+    adjusted_segments = []
+    for seg in segments:
+        start_ms = int(seg["start"] * 1000)
+        end_ms = int(seg["end"] * 1000)
+        seg_audio = audio[start_ms:end_ms]
+        nonsilence = silence.detect_nonsilent(seg_audio, min_silence_len=min_silence_len, silence_thresh=silence_thresh)
+        if nonsilence:
+            # 発話の最終地点まで
+            new_end = start_ms + nonsilence[-1][1]
+            # ただし極端に短くなりすぎないよう、最低0.3秒残す
+            if new_end - start_ms > 300:
+                seg["end"] = new_end / 1000
+        adjusted_segments.append(seg)
+    try:
+        os.remove(wav_file)
+    except Exception:
+        pass
+    return adjusted_segments
 
 # ffmpeg フィルタ用に Windowsパスをエスケープ（\ → /, : → \:）
 def escape_ffmpeg_path(path: Path) -> str:
@@ -695,7 +739,8 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     if not segments:
         print(f"⚠️ Whisperのセグメントが空です: {clip_path.name}")
         return
-
+    
+    segments = adjust_segment_ends(str(clip_path), segments)
     segments = remove_redundant_segments(segments)
     if not any(seg["text"].strip() for seg in segments):
         clip_path.unlink(missing_ok=True)
