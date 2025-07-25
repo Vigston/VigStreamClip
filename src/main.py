@@ -310,6 +310,7 @@ def call_gpt_proofread_segments(segments: List[dict]) -> List[dict]:
 
     prompt = (
         "以下は音声認識ツール『Whisper』によって自動生成された日本語の文字起こし結果です。\n"
+        "以下の日本語文章を「。」または「、」でのみ区切ってください。\n"
         "各行は音声セグメントに対応しており、インデックス付きで表示されています。\n"
         "あなたの仕事は **音声認識に起因する誤字脱字のみ** を修正することです。\n\n"
         "【重要な指示】\n"
@@ -560,19 +561,66 @@ def convert_color_tags_to_ass(text: str) -> str:
     return converted
 
 # 長い字幕を自動で適切な長さに分割
-def split_long_subtitle(text: str, max_chars: int) -> list:
-    """長い字幕テキストを句読点・読点・スペースなどで自然に分割"""
+def split_long_subtitle(text: str, max_chars: int = 40, words: list = None) -> list:
+    """
+    句点（。！？）で文単位に区切り、1文がmax_charsを超える場合は読点（、）や空白で折り返し。
+    words: Whisperの"words"リスト(単語単位でstart/endあり)を渡すと
+           各ブロックに対応する単語区間のstart/endも返す。
+           例: [(start, end, block_text), ...]
+    """
     blocks = []
-    buf = ""
-    for ch in text:
-        buf += ch
-        # 指定文字数を超えたら区切り文字で分割
-        if len(buf) >= max_chars and ch in "。！？、,. ":
-            blocks.append(buf.strip())
-            buf = ""
-    if buf.strip():
-        blocks.append(buf.strip())
-    return blocks
+
+    # 1. 句点・感嘆符・疑問符などでまず文ごとに分割
+    sentences = re.split(r'(?<=[。！？])', text)
+
+    for sentence in sentences:
+        s = sentence.strip()
+        if not s:
+            continue
+        # 2. 1文がmax_charsを超える場合、読点や空白で折り返し
+        while len(s) > max_chars:
+            # 読点で分割
+            comma_pos = s.rfind("、", 0, max_chars)
+            if comma_pos == -1:
+                # 空白で分割
+                space_pos = s.rfind(" ", 0, max_chars)
+                if space_pos == -1:
+                    # 強制分割
+                    split_pos = max_chars
+                else:
+                    split_pos = space_pos + 1
+            else:
+                split_pos = comma_pos + 1
+            blocks.append(s[:split_pos].strip())
+            s = s[split_pos:].strip()
+        if s:
+            blocks.append(s)
+
+    # 単語情報なし → 今まで通り
+    if not words or len(words) == 0:
+        return blocks
+
+    # 単語割り当て（ざっくり文字長で割る。日本語は単語長のブレに注意）
+    result = []
+    word_idx = 0
+    for b in blocks:
+        b_len = len(b.replace(" ", ""))  # 空白除去で比較
+        acc = ""
+        start_idx = word_idx
+        # 単語のつなぎで全体を埋めていく
+        while word_idx < len(words) and len(acc + words[word_idx]['word'].strip()) <= b_len:
+            acc += words[word_idx]['word'].strip()
+            word_idx += 1
+            if len(acc) >= b_len:
+                break
+        end_idx = word_idx - 1 if word_idx > start_idx else start_idx
+        if start_idx <= end_idx and end_idx < len(words):
+            start = words[start_idx].get("start", None)
+            end = words[end_idx].get("end", None)
+            result.append((start, end, b))
+        else:
+            result.append((None, None, b))
+    return result
 
 def generate_comment_to_png_sequence(
     comments,        # チャットデータ（dictリスト）
@@ -734,7 +782,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     ], check=True)
 
     # ② Whisperで字幕セグメント取得
-    result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe")
+    result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe", word_timestamps=True)
     segments = result["segments"]
     if not segments:
         print(f"⚠️ Whisperのセグメントが空です: {clip_path.name}")
@@ -768,20 +816,28 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
         entry_num = 1
         for i, corr in enumerate(corrected):
             seg = segments[corr["index"]]
-            seg_start = seg["start"]
-            seg_end = seg["end"]
-            blocks = split_long_subtitle(corr['text'], max_width)
+            # 単語リスト（無ければ[]）
+            words = seg.get("words", [])
+            # 修正テキスト・max_width・単語リストで分割
+            blocks = split_long_subtitle(corr['text'], 40, words)
             if not blocks:
-                blocks = [corr['text']]
-            block_count = len(blocks)
-            total_duration = seg_end - seg_start
-            duration_per_block = total_duration / block_count if block_count > 0 else total_duration
-            for b_idx, b in enumerate(blocks):
-                block_start = seg_start + duration_per_block * b_idx
-                block_end = seg_start + duration_per_block * (b_idx + 1)
+                blocks = [(seg["start"], seg["end"], corr['text'])] if words else [corr['text']]
+            for b in blocks:
+                if isinstance(b, tuple):
+                    block_start, block_end, btext = b
+                    # start/endがNoneなら元seg範囲
+                    if block_start is None:
+                        block_start = seg["start"]
+                    if block_end is None:
+                        block_end = seg["end"]
+                else:
+                    # 単語情報なし従来型
+                    block_start = seg["start"]
+                    block_end = seg["end"]
+                    btext = b
                 start_str = format_timestamp(block_start)
                 end_str = format_timestamp(block_end)
-                f.write(f"{entry_num}\n{start_str} --> {end_str}\n{b}\n\n")
+                f.write(f"{entry_num}\n{start_str} --> {end_str}\n{btext}\n\n")
                 entry_num += 1
 
     # ⑥ 差分ログ出力
