@@ -770,7 +770,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     overlay_output = clip_dir / f"clip_{index}_danmaku.mp4"
     final_output = clip_dir / f"clip_{index}_final.mp4"
 
-    # ① クリップ切り出し（この関数内の動画は相対秒でOK）
+    # ① クリップ切り出し
     subprocess.run([
         "ffmpeg", "-y",
         "-ss", str(clip.start_time),
@@ -782,12 +782,12 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     ], check=True)
 
     # ② Whisperで字幕セグメント取得
-    result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe", word_timestamps=True)
+    result = whisper_model.transcribe(str(clip_path), language="ja", task="transcribe")
     segments = result["segments"]
     if not segments:
         print(f"⚠️ Whisperのセグメントが空です: {clip_path.name}")
         return
-    
+
     segments = adjust_segment_ends(str(clip_path), segments)
     segments = remove_redundant_segments(segments)
     if not any(seg["text"].strip() for seg in segments):
@@ -816,29 +816,31 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
         entry_num = 1
         for i, corr in enumerate(corrected):
             seg = segments[corr["index"]]
-            # 単語リスト（無ければ[]）
-            words = seg.get("words", [])
-            # 修正テキスト・max_width・単語リストで分割
-            blocks = split_long_subtitle(corr['text'], 40, words)
+            text = corr['text'].strip()
+            blocks = split_long_subtitle(text, 40)  # ←words無し！
+
             if not blocks:
-                blocks = [(seg["start"], seg["end"], corr['text'])] if words else [corr['text']]
-            for b in blocks:
-                if isinstance(b, tuple):
-                    block_start, block_end, btext = b
-                    # start/endがNoneなら元seg範囲
-                    if block_start is None:
-                        block_start = seg["start"]
-                    if block_end is None:
-                        block_end = seg["end"]
-                else:
-                    # 単語情報なし従来型
-                    block_start = seg["start"]
-                    block_end = seg["end"]
-                    btext = b
-                start_str = format_timestamp(block_start)
-                end_str = format_timestamp(block_end)
-                f.write(f"{entry_num}\n{start_str} --> {end_str}\n{btext}\n\n")
+                blocks = [text]
+
+            seg_start = seg["start"]
+            seg_end = seg["end"]
+            total_chars = sum(len(b) for b in blocks)
+            if total_chars == 0:
+                continue
+
+            t = seg_start
+            for j, b in enumerate(blocks):
+                block_len = len(b)
+                block_duration = (seg_end - seg_start) * (block_len / total_chars)
+                next_t = t + block_duration
+                # 最後のブロックは必ずseg_endまで
+                if j == len(blocks) - 1:
+                    next_t = seg_end
+                start_str = format_timestamp(t)
+                end_str = format_timestamp(next_t)
+                f.write(f"{entry_num}\n{start_str} --> {end_str}\n{b}\n\n")
                 entry_num += 1
+                t = next_t
 
     # ⑥ 差分ログ出力
     with open(diff_path, "w", encoding="utf-8") as f:
@@ -855,12 +857,12 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
         with open(structure_path, "w", encoding="utf-8") as f:
             json.dump(structure, f, ensure_ascii=False, indent=2)
 
-    # ⑧ チャットデータから該当区間コメント抽出（配信全体での絶対秒数）
+    # ⑧ チャットデータから該当区間コメント抽出
     comments = extract_comments_for_clip(
         chat_json_path, abs_start, abs_end
     )
     print(f"abs_start: {abs_start}, abs_end: {abs_end}")
-    print(f"comments件数: {len(comments)}")  # ←追加
+    print(f"comments件数: {len(comments)}")
 
     # ⑨ 弾幕PNG連番生成
     video_resolution = get_video_resolution(clip_path)
