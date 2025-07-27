@@ -6,8 +6,7 @@ from collections import defaultdict
 import threading
 import urllib.parse
 import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List
@@ -18,7 +17,6 @@ import matplotlib.pyplot as plt
 from datetime import timedelta
 import openai
 from tkinter import *
-from tkinter import messagebox
 from fontTools.ttLib import TTFont  # ← fontTools を使用
 import sys
 import logging
@@ -28,6 +26,8 @@ import soundfile as sf
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
 from pydub import AudioSegment, silence
+import traceback
+import copy
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -38,10 +38,7 @@ def get_base_dir():
 plt.rcParams["font.family"] = "Yu Gothic"
 
 BASE_DIR = get_base_dir()
-FONT_DIR = BASE_DIR / "fonts"
-SEGMENT_DIR = BASE_DIR / "output" / "segments"
-OUTPUT_BASE_DIR = BASE_DIR / "output" / "clip"
-SETTINGS_FILE_DIR = BASE_DIR / "res" / "setting.txt"
+font_dir_path = BASE_DIR / "fonts"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
@@ -54,6 +51,293 @@ AVAILABLE_FONTS = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"]
 FONT_WIDTH_RATIO = {
     "Yu Gothic": 3.94,
 }
+
+# デバッグ出力(Tkinterの方のログをVScodeでも確認できるようにするため)
+class DualWriter:
+    def __init__(self, *writers):
+        self.writers = writers
+    def write(self, msg):
+        for w in self.writers:
+            try:
+                w.write(msg)
+                w.flush()
+            except Exception:
+                pass
+    def flush(self):
+        for w in self.writers:
+            try:
+                w.flush()
+            except Exception:
+                pass
+
+# アプリデータ
+class App:
+    class FileManager:
+        def __init__(self, base_dir):
+            self.base_dir = Path(base_dir)
+            self.files_dir = self.base_dir / "projects"
+            self.files_dir.mkdir(exist_ok=True)
+            self._project_file_path: Path = None
+
+        @property
+        def project_file_path(self):
+            return self._project_file_path
+
+        def list_files(self):
+            return [p.name for p in self.files_dir.iterdir() if p.is_dir()]
+
+        def create_file(self, name, settings=None):
+            file_dir = self.files_dir / name
+            file_dir.mkdir(parents=True, exist_ok=True)
+            self._project_file_path = file_dir
+
+            # 必要なサブフォルダ
+            (file_dir / "res").mkdir(exist_ok=True)
+
+            # res/setting.txt だけ初期化
+            if settings is not None:
+                setting_txt_file = file_dir / "res" / "setting.txt"
+                with open(setting_txt_file, "w", encoding="utf-8") as f:
+                    json.dump(settings, f, ensure_ascii=False, indent=2)
+
+            return file_dir
+
+        def select_file(self, name):
+            file_dir = self.files_dir / name
+            if file_dir.exists():
+                self._project_file_path = file_dir
+                return True
+            return False
+
+        def delete_file(self, name):
+            file_dir = self.files_dir / name
+            if file_dir.exists():
+                import shutil
+                shutil.rmtree(file_dir)
+                if self._project_file_path == file_dir:
+                    self._project_file_path = None
+                return True
+            return False
+
+        @property
+        def font_dir_path(self):
+            path: Path = None
+            if not self._project_file_path:
+                path = BASE_DIR / "fonts"
+            else:
+                path = self._project_file_path / "fonts"
+            path.mkdir(exist_ok=True)
+            return path
+
+        def segment_dir_path(self, title_name):
+            path: Path = None
+            if not self._project_file_path:
+                path = BASE_DIR / title_name / "output" / "segments"
+            else:
+                path = self._project_file_path / title_name / "output" / "segments"
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+
+        def output_dir_path(self, title_name):
+            path: Path = None
+            if not self._project_file_path:
+                path = BASE_DIR / title_name / "output"
+            else:
+                path = self._project_file_path / title_name / "output"
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+
+        @property
+        def settings_file_path(self):
+            if not self._project_file_path:
+                path = BASE_DIR / "res" / "setting.txt"
+            else:
+                path = self._project_file_path / "res" / "setting.txt"
+            
+            return path
+
+        def load_file_settings(self, settings: dict):
+            path = self.settings_file_path
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    settings.clear()
+                    settings.update(json.load(f))
+                    print(f"✅ ファイルごとの設定を読み込みました: {path}")
+
+        def save_file_settings(self, settings: dict):
+            path = self.settings_file_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            print(f"✅ ファイルごとの設定を保存しました: {path}")
+    
+    class StdoutRedirector:
+        def __init__(self, text_widget):
+            self.text_widget = text_widget
+        def write(self, message):
+            self.text_widget.configure(state='normal')
+            self.text_widget.insert('end', message)
+            self.text_widget.configure(state='disabled')
+            self.text_widget.yview('end')
+            self.text_widget.update_idletasks() # 「保留中の描画・レイアウト作業（アイドルタスク）」だけを今すぐ実行
+        def flush(self): pass
+
+    class TextHandler(logging.Handler):
+        def __init__(self, widget):
+            super().__init__()
+            self.widget = widget
+        def emit(self, record):
+            msg = self.format(record)
+            def append():
+                self.widget.configure(state='normal')
+                self.widget.insert('end', msg + '\n')
+                self.widget.configure(state='disabled')
+                self.widget.yview('end')
+            self.widget.after(0, append)
+    
+    def __init__(self):
+        self.name: str = ""
+        self.root = tk.Tk()
+        self.log_frame: Frame = None
+        self.log_widget: ScrolledText = None
+        self.text_handler: App.TextHandler = None
+        self.console_handler: logging.StreamHandler = None
+        self.menubar: Menu = None
+        self.frame: tk.Frame = None
+        self.label: tk.Label = None
+        self.entry: tk.Entry = None
+        self.stream_analysis: StreamAnalysis = StreamAnalysis()
+        self.file_manager = self.FileManager(BASE_DIR)
+        self._project_file_path_name = None  # UI選択中ファイル名
+        self.settings = settings  # 各ファイルごとの設定をこのdictに切り替え保存する
+    
+    def run(self):
+        self.root.mainloop()
+        
+    def setup(self, app_name: str):
+        self.name = app_name
+
+        self.root.title(self.name)
+        self.root.report_callback_exception = self.custom_callback_exception
+        
+        self.setup_gui()
+        self.setup_logging_area()
+        self.setup_logging_redirect()
+        self.setup_menu()
+    
+    def setup_gui(self):
+        # GUIのレイアウト枠
+        self.frame = tk.Frame(self.root, padx=20, pady=20)
+        self.frame.pack()
+        
+        self.label = tk.Label(self.frame, text="YouTube動画URLを入力:")
+        self.label.pack()
+        self.entry = tk.Entry(self.frame, width=70)
+        self.entry.pack(pady=5)
+        tk.Button(self.frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat()).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video()).start()).pack(pady=5)
+        tk.Button(self.frame, text="📊 分析してグラフを表示", command=lambda: analyze_and_plot()).pack(pady=5)
+        tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments()).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder()).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file()).start()).pack(pady=5)
+        tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui()).start()).pack(pady=5)
+    
+    def setup_menu(self):
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
+        
+        # メニュー項目
+        #####ファイル#####
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="ファイル", menu=file_menu)
+        file_menu.add_command(label="新規ファイル", command=lambda: create_new_file())
+        file_menu.add_command(label="ファイルを開く", command=lambda: open_file())
+        file_menu.add_command(label="ファイルを削除", command=lambda: delete_file())
+
+        #####設定#####
+        setting_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="設定", menu=setting_menu)
+        setting_menu.add_command(label="解像度", command=lambda: open_resolution_window())
+        setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window())
+        setting_menu.add_command(label="題名スタイル", command=lambda: open_title_style_dialog())
+        setting_menu.add_separator()
+        setting_menu.add_command(label="💾 設定を保存", command=lambda: (
+            save_settings(),
+            messagebox.showinfo("保存完了", "現在の設定を保存しました。")
+        ))
+
+        #####出力#####
+        output_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="出力", menu=output_menu)
+        output_menu.add_command(label="クリップ焼き直し", command=lambda: threading.Thread(target=clip_reburn_gui).start())
+    
+    def setup_logging_area(self):
+        # ログ用ウィジェット作成
+        self.log_frame = tk.Frame(self.root)
+        self.log_frame.pack(side="bottom", fill="x")
+        self.log_widget = ScrolledText(self.log_frame, state='disabled', height=10)
+        self.log_widget.pack(fill="both", expand=True)
+
+    def setup_logging_redirect(self):
+        # stdout/stderr をGUIに
+        # stdout/stderr をGUIとターミナルに二重出力
+        dual_out = DualWriter(sys.__stdout__, App.StdoutRedirector(self.log_widget))
+        dual_err = DualWriter(sys.__stderr__, App.StdoutRedirector(self.log_widget))
+        sys.stdout = dual_out
+        sys.stderr = dual_err
+
+        self.text_handler = App.TextHandler(self.log_widget)
+        self.text_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+
+        self.console_handler = logging.StreamHandler(sys.__stdout__)
+        self.console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+
+        logger = logging.getLogger()
+        logger.setLevel(logging.WARNING)
+        logger.addHandler(self.text_handler)
+        logger.addHandler(self.console_handler)
+    
+    def update_window_title(self):
+        # 現在のプロジェクト名があればタイトルに付加
+        if self.project_file_path_name:
+            self.root.title(f"{self.name} - [{self.project_file_path_name}]")
+        else:
+            self.root.title(self.name)
+    
+    # Tkinter例外をターミナルにも出す
+    def custom_callback_exception(self, exc, val, tb):
+        # GUIのログウィジェットとターミナルの両方に出す
+        msg = ''.join(traceback.format_exception(exc, val, tb))
+        try:
+            self.log_widget.configure(state='normal')
+            self.log_widget.insert('end', msg)
+            self.log_widget.configure(state='disabled')
+            self.log_widget.yview('end')
+        except Exception:
+            pass
+        print(msg, file=sys.__stderr__)  # ターミナルにも
+
+# クリップデータ
+@dataclass(slots=True)
+class Clip:
+    start_time: float
+    end_time: float
+
+# 配信データ
+@dataclass(slots=True)
+class StreamAnalysis:
+    video_url: str = ""
+    safe_title: str = ""
+    raw_title: str = ""
+    chat_file: str = ""
+    video_file: str = ""
+    x: List[int] = field(default_factory=list)
+    y: List[int] = field(default_factory=list)
+    x_labels: List[str] = field(default_factory=list)
+    valleys: List[int] = field(default_factory=list)
+    peaks: List[int] = field(default_factory=list)
+    audio_x: List[int] = field(default_factory=list)
+    audio_y: List[float] = field(default_factory=list)
 
 # 設定データ
 settings = {
@@ -84,6 +368,8 @@ settings = {
 # whisperの使用モデルを設定
 whisper_model = whisper.load_model("large-v3", device="cuda")
 
+app: App = None
+
 COLOR_MAP = {
     "赤": "&H000033FF&",
     "青": "&H00FF0000&",
@@ -110,139 +396,6 @@ COLOR_MAP = {
     "紺": "&H00660000&",
     "ライム": "&H0000FF80&",
 }
-
-# アプリデータ
-class App:
-    class StdoutRedirector:
-        def __init__(self, text_widget):
-            self.text_widget = text_widget
-        def write(self, message):
-            self.text_widget.configure(state='normal')
-            self.text_widget.insert('end', message)
-            self.text_widget.configure(state='disabled')
-            self.text_widget.yview('end')
-            self.text_widget.update_idletasks() # 「保留中の描画・レイアウト作業（アイドルタスク）」だけを今すぐ実行
-        def flush(self): pass
-
-    class TextHandler(logging.Handler):
-        def __init__(self, widget):
-            super().__init__()
-            self.widget = widget
-        def emit(self, record):
-            msg = self.format(record)
-            def append():
-                self.widget.configure(state='normal')
-                self.widget.insert('end', msg + '\n')
-                self.widget.configure(state='disabled')
-                self.widget.yview('end')
-            self.widget.after(0, append)
-    
-    def __init__(self):
-        self.root = tk.Tk()
-        self.log_frame: Frame = None
-        self.log_widget: ScrolledText = None
-        self.text_handler: App.TextHandler = None
-        self.console_handler: logging.StreamHandler = None
-        self.menubar: Menu = None
-        self.frame: tk.Frame = None
-        self.label: tk.Label = None
-        self.entry: tk.Entry = None
-        self.stream_analysis: StreamAnalysis = StreamAnalysis()
-    
-    def run(self):
-        self.root.mainloop()
-        
-    def setup(self, app_name: str):
-        self.root.title(app_name)
-        
-        self.setup_gui()
-        self.setup_logging_area()
-        self.setup_logging_redirect()
-        self.setup_menu()
-    
-    def setup_gui(self):
-        # GUIのレイアウト枠
-        self.frame = tk.Frame(self.root, padx=20, pady=20)
-        self.frame.pack()
-        
-        self.label = tk.Label(self.frame, text="YouTube動画URLを入力:")
-        self.label.pack()
-        self.entry = tk.Entry(self.frame, width=70)
-        self.entry.pack(pady=5)
-        tk.Button(self.frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat(self)).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video(self)).start()).pack(pady=5)
-        tk.Button(self.frame, text="📊 分析してグラフを表示", command=lambda: analyze_and_plot(self)).pack(pady=5)
-        tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments(self)).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder(self)).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file(self)).start()).pack(pady=5)
-        tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui(self)).start()).pack(pady=5)
-    
-    def setup_menu(self):
-        self.menubar = tk.Menu(self.root)
-        self.root.config(menu=self.menubar)
-        
-        # メニュー項目
-        #####設定#####
-        setting_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="設定", menu=setting_menu)
-        setting_menu.add_command(label="解像度", command=lambda: open_resolution_window(self.root))
-        setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window(self.root))
-        setting_menu.add_command(label="題名スタイル", command=lambda: open_title_style_dialog(self.root))
-        setting_menu.add_separator()
-        setting_menu.add_command(label="💾 設定を保存", command=lambda: (
-            save_settings(),
-            messagebox.showinfo("保存完了", "現在の設定を保存しました。")
-        ))
-
-        #####出力#####
-        output_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="出力", menu=output_menu)
-        output_menu.add_command(label="クリップ焼き直し", command=lambda: threading.Thread(target=clip_reburn_gui).start())
-    
-    def setup_logging_area(self):
-        # ログ用ウィジェット作成
-        self.log_frame = tk.Frame(self.root)
-        self.log_frame.pack(side="bottom", fill="x")
-        self.log_widget = ScrolledText(self.log_frame, state='disabled', height=10)
-        self.log_widget.pack(fill="both", expand=True)
-
-    def setup_logging_redirect(self):
-        # stdout/stderr をGUIに
-        sys.stdout = App.StdoutRedirector(self.log_widget)
-        sys.stderr = App.StdoutRedirector(self.log_widget)
-
-        self.text_handler = App.TextHandler(self.log_widget)
-        self.text_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-
-        self.console_handler = logging.StreamHandler(sys.__stdout__)
-        self.console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-
-        logger = logging.getLogger()
-        logger.setLevel(logging.WARNING)
-        logger.addHandler(self.text_handler)
-        logger.addHandler(self.console_handler)
-
-# クリップデータ
-@dataclass(slots=True)
-class Clip:
-    start_time: float
-    end_time: float
-
-# 配信データ
-@dataclass(slots=True)
-class StreamAnalysis:
-    video_url: str = ""
-    safe_title: str = ""
-    raw_title: str = ""
-    chat_file: str = ""
-    video_file: str = ""
-    x: List[int] = field(default_factory=list)
-    y: List[int] = field(default_factory=list)
-    x_labels: List[str] = field(default_factory=list)
-    valleys: List[int] = field(default_factory=list)
-    peaks: List[int] = field(default_factory=list)
-    audio_x: List[int] = field(default_factory=list)
-    audio_y: List[float] = field(default_factory=list)
 
 # 直接ファイルを開く場合はこれを通して行う
 def resource_path(relative_path: str) -> Path:
@@ -488,10 +641,10 @@ def scan_custom_fonts() -> dict:
     fonts/ 以下のすべてのサブフォルダから .ttf を探し、
     {フォント名: フルパス} を返す
     """
-    FONT_DIR.mkdir(exist_ok=True)
+    font_dir_path.mkdir(exist_ok=True)
     font_map = {}
 
-    for font_path in FONT_DIR.rglob("*.ttf"):  # ← 再帰探索に変更！
+    for font_path in font_dir_path.rglob("*.ttf"):  # ← 再帰探索に変更！
         try:
             tt = TTFont(font_path)
             for record in tt["name"].names:
@@ -735,9 +888,12 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     クリップ動画＋字幕生成＋弾幕生成＋合成
     セグメントの絶対秒(start_sec, end_sec)は毎回 segment_info.json からファイル名で検索して取得する。
     """
+    global app
+    fileMgr = app.file_manager
+    segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
 
     # ▼ セグメント情報(絶対秒)を segment_info.json から取得
-    segment_info_path = SEGMENT_DIR / "segment_info.json"
+    segment_info_path = segment_dir_path / "segment_info.json"
     if not segment_info_path.exists():
         print(f"❌ segment_info.json が見つかりません: {segment_info_path}")
         return
@@ -904,8 +1060,72 @@ def normalize_youtube_url(url: str) -> str:
     new_query = urllib.parse.urlencode(query, doseq=True)
     return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
+def create_new_file():
+    global app
+    name = simpledialog.askstring("新規ファイル", "ファイル名（例: プロジェクト名）を入力してください")
+    if not name:
+        return
+    project_settings = copy.deepcopy(app.settings)
+    app.file_manager.create_file(name, project_settings)
+    app.project_file_path_name = name
+    app.update_window_title()
+    messagebox.showinfo("ファイル作成", f"新しいファイル「{name}」を作成しました。")
+    app.file_manager.load_file_settings(app.settings)
+
+def open_file():
+    global app
+    files = app.file_manager.list_files()
+    if not files:
+        messagebox.showinfo("情報", "まだファイルがありません。新規ファイルを作成してください。")
+        return
+    win = tk.Toplevel(app.root)
+    win.title("ファイルを開く")
+    tk.Label(win, text="作業ファイル選択:").pack()
+    lb = tk.Listbox(win)
+    for f in files:
+        lb.insert(tk.END, f)
+    lb.pack()
+    def do_select():
+        sel = lb.curselection()
+        if not sel:
+            return
+        name = lb.get(sel[0])
+        app.file_manager.select_file(name)
+        app.project_file_path_name = name
+        app.update_window_title()
+        app.file_manager.load_file_settings(app.settings)
+        win.destroy()
+        messagebox.showinfo("ファイル切替", f"「{name}」を開きました。")
+    tk.Button(win, text="開く", command=do_select).pack()
+
+def delete_file():
+    global app
+    files = app.file_manager.list_files()
+    if not files:
+        messagebox.showinfo("情報", "削除できるファイルがありません。")
+        return
+    win = tk.Toplevel(app.root)
+    win.title("ファイルを削除")
+    tk.Label(win, text="削除するファイル選択:").pack()
+    lb = tk.Listbox(win)
+    for f in files:
+        lb.insert(tk.END, f)
+    lb.pack()
+    def do_delete():
+        sel = lb.curselection()
+        if not sel:
+            return
+        name = lb.get(sel[0])
+        if messagebox.askyesno("確認", f"「{name}」を本当に削除しますか？"):
+            app.file_manager.delete_file(name)
+            win.destroy()
+            messagebox.showinfo("削除", f"「{name}」を削除しました。")
+    tk.Button(win, text="削除", command=do_delete).pack()
+
 # 解像度設定メニュー表示
-def open_resolution_window(root: tk.Tk):
+def open_resolution_window():
+    global app
+    root = app.root
     res_win = tk.Toplevel(root)
     res_win.title("解像度の設定")
     res_win.geometry("300x120")
@@ -935,7 +1155,10 @@ def open_resolution_window(root: tk.Tk):
     tk.Button(res_win, text="保存", command=save_resolution).pack(pady=10)
 
 # 字幕設定ウィンドウ表示
-def open_subtitle_style_window(root: tk.Tk):
+def open_subtitle_style_window():
+    global app
+    root = app.root
+
     def show_help():
         help_win = Toplevel(root)
         help_win.title("字幕スタイルの説明")
@@ -1026,7 +1249,10 @@ def open_subtitle_style_window(root: tk.Tk):
     Button(style_win, text="カスタムフォント", command=choose_custom_font).pack(pady=6)
     Button(style_win, text="保存", command=save_style).pack(pady=10)
 
-def open_title_style_dialog(root: tk.Tk):
+def open_title_style_dialog():
+    global app
+    root = app.root
+
     dialog = tk.Toplevel(root)
     dialog.title("題名スタイル設定")
 
@@ -1150,23 +1376,39 @@ def generate_subtitle_filter(srt_path: Path) -> str:
 
 # 設定保存関数
 def save_settings():
+    global app
+    fileMgr = app.file_manager
     try:
-        SETTINGS_FILE_DIR.parent.mkdir(parents=True, exist_ok=True)
-        with open(resource_path(SETTINGS_FILE_DIR), "w", encoding="utf-8") as f:
+        if fileMgr.project_file_path:  # プロジェクト選択中なら個別に
+            setting_file_path = fileMgr.project_file_path / "res" / "setting.txt"
+        else:  # 何も開いてなければ共通設定
+            setting_file_path = BASE_DIR / "common_settings.txt"
+        setting_file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(setting_file_path, "w", encoding="utf-8") as f:
+            import json
             json.dump(settings, f, ensure_ascii=False, indent=2)
-        print("✅ 設定を保存しました")
+        print(f"✅ 設定を保存しました: {setting_file_path}")
     except Exception as e:
         print(f"❌ 設定の保存に失敗: {e}")
 
 # wavファイルに変換(音データ取得のため)
 def convert_to_wav(input_file, wav_file):
+    if not os.path.exists(str(input_file)):
+        print(f"❌ 入力ファイルが存在しません: {input_file}")
+        raise RuntimeError(f"入力ファイルが存在しません: {input_file}")
     cmd = [
-        "ffmpeg", "-y", "-i", input_file,
+        "ffmpeg", "-y",
+        "-i", str(input_file),
         "-ac", "1",
         "-ar", "44100",
-        wav_file
+        str(wav_file)
     ]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print("実行コマンド:", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8")
+    if result.returncode != 0:
+        print(f"❌ ffmpeg変換失敗: {input_file}")
+        print("ffmpeg stderr:\n", result.stderr)
+        raise RuntimeError(f"ffmpeg変換失敗: {input_file}")
 
 def extract_rms_numpy(wav_file):
     audio, samplerate = sf.read(wav_file)
@@ -1181,54 +1423,62 @@ def extract_rms_numpy(wav_file):
     return rms_values
 
 ##### クリップ #####
-def generate_clips_from_folder(app: App):
+def generate_clips_from_folder():
         """
         セグメント動画フォルダ指定してクリップ動画を生成する
         """
+        global app
+
         segment_dir_path = filedialog.askdirectory(title="セグメントフォルダを選択")
         if not segment_dir_path:
             print("⚠️ セグメントフォルダが選択されませんでした。処理を中止します。")
             return
         
-        if update_paths_from_url(app) == False:
+        if update_paths_from_url() == False:
             return
     
         def run():
             print(f"📁 フォルダ選択でクリップ動画の生成を開始します・・・: {segment_dir_path}")
             for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
-                generate_clips(segment_file_path, app)
+                generate_clips(segment_file_path)
             app.root.after(0, lambda: messagebox.showinfo("完了", "フォルダ指定のクリップ動画生成が完了しました"))
     
         threading.Thread(target=run).start()
 
-def generate_clips_from_file(app: App):
+def generate_clips_from_file():
     """
     セグメント動画ファイル指定してクリップ動画を生成する
     """
+    global app
     segment_file_path = filedialog.askopenfilename(filetypes=[("MP4 Files", "*.mp4")])
     if not segment_file_path:
         print("⚠️ ファイルが選択されませんでした。処理を中止します。")
         return
     
-    if update_paths_from_url(app) == False:
+    if update_paths_from_url() == False:
         return
     
     def run():
         print(f"🎬 ファイル選択でクリップ動画の生成を開始します・・・: {segment_file_path}")
-        generate_clips(Path(segment_file_path), app)
+        generate_clips(Path(segment_file_path))
         app.root.after(0, lambda: messagebox.showinfo("完了", "ファイル指定のクリップ動画生成が完了しました"))
     threading.Thread(target=run).start()
     
-def generate_clips(segment_path: Path, app: App):
+def generate_clips(segment_path: Path):
     """
     指定セグメント動画からクリップ動画生成する
     Args:
         segment_path (Path): クリップ元となるセグメント動画のファイルパス
     """
+    global app
+    fileMgr = app.file_manager
+    segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
+    output_dir_path = fileMgr.output_dir_path(app.stream_analysis.safe_title)
+
     print(f"🎬 クリップ動画生成開始・・・: {segment_path.name}")
     try:
         # ▼ segment_info.json 参照
-        segment_info_path = SEGMENT_DIR / "segment_info.json"
+        segment_info_path = segment_dir_path / "segment_info.json"
         if not segment_info_path.exists():
             print(f"❌ segment_info.json が見つかりません: {segment_info_path}")
             return
@@ -1251,14 +1501,14 @@ def generate_clips(segment_path: Path, app: App):
         print(f"📝 字幕セグメント数: {len(segments)}")
         clips = group_segments_by_duration(segments, MIN_DURATION, MAX_DURATION)
         print(f"📌 抽出されたクリップ数: {len(clips)}")
-        output_dir = OUTPUT_BASE_DIR / segment_path.stem
+        output_dir = output_dir_path / segment_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
         
         stream_title = app.stream_analysis.safe_title
         if not stream_title:
             print("❌ stream_titleが空です。動画分析またはURL入力を先に実行してください。")
             return
-        chat_json_path = BASE_DIR / "output" / f"{stream_title}_chat.json"
+        chat_json_path = output_dir_path / f"{stream_title}_chat.json"
         
         for i, clip in enumerate(clips):
             print(f"🔧 クリップ生成: clip_{i} [{clip.start_time:.2f}s - {clip.end_time:.2f}s]")
@@ -1269,12 +1519,9 @@ def generate_clips(segment_path: Path, app: App):
         print(f"❌ ファイル {segment_path.name} の処理に失敗しました: {e}")
     print("✅ クリップ動画生成が完了しました")
     
-def update_paths_from_url(app: App):
-    # アプリケーションが存在しないなら終了
-    if app is None:
-        return False
-        
-    
+def update_paths_from_url():
+    global app
+
     url_input = app.entry.get().strip()
     if not url_input:
         messagebox.showwarning("URL未入力", "YouTubeのURLを入力してください")
@@ -1290,17 +1537,16 @@ def update_paths_from_url(app: App):
         return False
     app.stream_analysis.raw_title = title
     app.stream_analysis.safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
-    output_dir = BASE_DIR / "output"
-    output_dir.mkdir(exist_ok=True)
+    output_dir = app.file_manager.output_dir_path(app.stream_analysis.safe_title)
+    output_dir.mkdir(parents=True, exist_ok=True)
     app.stream_analysis.chat_file = str(output_dir / f"{app.stream_analysis.safe_title}_chat.json")
-    app.stream_analysis.video_file = str(output_dir / f"{app.stream_analysis.safe_title}.mp4")
+    app.stream_analysis.video_file = str(output_dir / f"{app.stream_analysis.safe_title}_1920x1080.mp4")
     return True
 
-def download_chat(app: App):
-    # アプリケーションが存在しないなら終了
-    if app is None:
-        return
-    if not update_paths_from_url(app):
+def download_chat():
+    global app
+
+    if not update_paths_from_url():
         return
     if os.path.exists(app.stream_analysis.chat_file):
         messagebox.showinfo("情報", "チャットファイルは既に存在します。")
@@ -1314,25 +1560,18 @@ def download_chat(app: App):
     print("チャットデータダウンロード終了")
     messagebox.showinfo("完了", "チャットダウンロード完了！")
 
-def download_video(app: App):
-    # アプリケーションが存在しないなら終了
-    if app is None:
+def download_video():
+    global app
+
+    if not update_paths_from_url():
         return
-    if not update_paths_from_url(app):
-        return
-    # 🔹 保存先フォルダを選択（ファイル名は自動決定）
-    save_dir = filedialog.askdirectory(title="保存先フォルダを選択してください")
-    if not save_dir:
-        print("⚠️ 保存がキャンセルされました。")
-        return
-    
+    base_name = app.stream_analysis.safe_title
+    save_dir = app.file_manager.output_dir_path(base_name)
     print("動画ダウンロード開始・・・")
-    save_dir = Path(save_dir)
     # 🔸 ユーザー設定解像度
     resolution = settings.get("Resolution", "1920x1080")
     target_width, target_height = map(int, resolution.lower().split("x"))
     # 🔸 保存ファイル名（元タイトルベース）
-    base_name = app.stream_analysis.safe_title
     base_output = save_dir / f"{base_name}_1920x1080.mp4"
     final_output = save_dir / f"{base_name}_{target_width}x{target_height}.mp4"
     print("動画(1920x1080)ダウンロード中・・・")
@@ -1370,26 +1609,19 @@ def download_video(app: App):
     app.stream_analysis.video_file = str(final_output)
     messagebox.showinfo("完了", f"動画取得完了: {final_output.name}")
 
-def analyze_and_plot(app: App) -> threading.Thread:
-    # アプリケーションが存在しないなら終了
-    if app is None:
-        return
-    
+def analyze_and_plot() -> threading.Thread:
+    global app
+
     def analyze():
-        if not update_paths_from_url(app):
+        if not update_paths_from_url():
             return
         if not os.path.exists(app.stream_analysis.chat_file):
             messagebox.showwarning("警告", "チャットファイルが存在しません。")
             return
         
         # 🎥 分析する動画ファイルを選択
-        video_file = filedialog.askopenfilename(
-            title="情報分析に使う動画ファイルを選択",
-            filetypes=[("MP4 Files", "*.mp4")]
-        )
-        
+        video_file = app.stream_analysis.video_file
         if not video_file:
-            print(f"⚠️ 分析の為の動画選択がキャンセルされました。: {video_file}")
             return
         
         print("分析を開始・・・")
@@ -1426,10 +1658,14 @@ def analyze_and_plot(app: App) -> threading.Thread:
         print("動画音量(RMS)データを抽出中")
         # --- 音量（RMS）データ抽出 ---
         wav_file = "temp_audio.wav"
-        
-        convert_to_wav(video_file, wav_file)
-        rms_values = extract_rms_numpy(wav_file)
-        os.remove(wav_file)  # 一時ファイル削除
+        try:
+            convert_to_wav(video_file, wav_file)
+            if not os.path.exists(wav_file):
+                raise FileNotFoundError(f"wav変換に失敗: {wav_file}")
+            rms_values = extract_rms_numpy(wav_file)
+        finally:
+            if os.path.exists(wav_file):
+                os.remove(wav_file)
         
         # X軸は1秒ごと（動画の長さ秒分）
         audio_x = np.arange(len(rms_values))
@@ -1471,10 +1707,10 @@ def analyze_and_plot(app: App) -> threading.Thread:
     t.start()
     return t  # スレッドオブジェクトを返す
 
-def generate_segments(app: App):
-    # アプリケーションが存在しないなら終了
-    if app is None:
-        return
+def generate_segments():
+    global app
+    fileMgr = app.file_manager
+    segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
     
     if not app.stream_analysis.valleys or not app.stream_analysis.peaks:
         print("分析を行っていなかったので分析処理を実行します。")
@@ -1490,7 +1726,7 @@ def generate_segments(app: App):
         return
     
     print("セグメント生成開始・・・")
-    SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
+    segment_dir_path.mkdir(parents=True, exist_ok=True)
     BUFFER = 300
     segment_count = 1
     segment_meta = []
@@ -1501,7 +1737,7 @@ def generate_segments(app: App):
         start = max(0, start_valley - BUFFER)
         end = peak + BUFFER
         duration = end - start
-        segment_path = SEGMENT_DIR / f"segment_{segment_count:02}.mp4"
+        segment_path = segment_dir_path / f"segment_{segment_count:02}.mp4"
         subprocess.run([
             "ffmpeg", "-ss", str(timedelta(seconds=start)),
             "-i", video_file,
@@ -1517,9 +1753,9 @@ def generate_segments(app: App):
         segment_count += 1
 
     # ▼ segment_info.json 保存
-    with open(SEGMENT_DIR / "segment_info.json", "w", encoding="utf-8") as f:
+    with open(segment_dir_path / "segment_info.json", "w", encoding="utf-8") as f:
         json.dump(segment_meta, f, ensure_ascii=False, indent=2)
-    messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {SEGMENT_DIR}")
+    messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {segment_dir_path}")
     
 def extract_valley_peak_pairs(valleys, peaks):
     # 時間順に並んだ山谷をまとめる
@@ -1566,14 +1802,13 @@ def wrap_title_text(text, font, max_width):
         lines.append(line)
     return lines
 
-def calc_title_position(app: App,img, lines, font, settings):
+def calc_title_position(img, lines, font, settings):
     """
     settings: TitleAreaX, TitleAreaY, TitleAreaWidth, TitleAreaHeight, TitleAlignV, TitleAlignH
     lines: wrap_textで作成した行リスト
     """
-    # アプリケーションが存在しないなら終了
-    if app is None:
-        return
+    global app
+
     x0 = settings.get("TitleAreaX", 0)
     y0 = settings.get("TitleAreaY", 0)
     area_w = settings.get("TitleAreaWidth", img.width)
@@ -1594,10 +1829,9 @@ def calc_title_position(app: App,img, lines, font, settings):
         y = y0
     return x0, y, area_w, align_h, line_h
 
-def draw_title_on_img(app: App, img, title, font, settings):
-    # アプリケーションが存在しないなら終了
-    if app is None:
-        return
+def draw_title_on_img(img, title, font, settings):
+    global app
+
     draw = ImageDraw.Draw(img)
     area_w = settings.get("TitleAreaWidth", img.width)
     # ラップ
@@ -1622,10 +1856,8 @@ def draw_title_on_img(app: App, img, title, font, settings):
         y += line_h
     return img
 
-def generate_all_thumbnails_gui(app: App):
-    # アプリケーションが存在しないなら終了
-    if app is None:
-        return
+def generate_all_thumbnails_gui():
+    global app
     
     mp4_path = filedialog.askopenfilename(
         title="サムネイル生成する元動画ファイルを選択",
@@ -1712,14 +1944,31 @@ def generate_all_thumbnails_gui(app: App):
 
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
+    global app
     
-    # 使用時にセット
+    # 使用時にセット(chatgptのAPIキー)
     openai.api_key = load_api_key_from_file()
+
+    # アプリケーション
+    app = App()
+    if app is None:
+        print(f"アプリケーションの起動に失敗したため処理を終了します。")
+        return
+    app.setup("VigStreamClip")
+
+    # ファイル管理
+    fileMgr = app.file_manager
+    if fileMgr is None:
+        print(f"{App.FileManager.__name__}の取得に失敗しました。")
+        return
+    
+    settings_file_path = fileMgr.settings_file_path
+
     
     # 設定情報読み込み
-    if SETTINGS_FILE_DIR.exists():
+    if settings_file_path.exists():
         try:
-            with open(SETTINGS_FILE_DIR, "r", encoding="utf-8") as f:
+            with open(settings_file_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 settings.update(loaded)
                 print("✅ 設定ファイルから読み込みました")
@@ -1728,9 +1977,6 @@ def main():
     
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
-    
-    app = App()
-    app.setup("VigStreamClip")
 
     # アプリケーションの実行処理
     app.run()
