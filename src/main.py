@@ -913,7 +913,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     abs_end = segment_start_time + clip.end_time
 
     # クリップごとの作業ディレクトリ
-    clip_dir = output_dir / f"clip_{index}"
+    clip_dir = output_dir / "clip" / f"clip_{index}"
     clip_dir.mkdir(parents=True, exist_ok=True)
 
     # 各ファイルパス
@@ -1755,6 +1755,8 @@ def generate_segments():
     # ▼ segment_info.json 保存
     with open(segment_dir_path / "segment_info.json", "w", encoding="utf-8") as f:
         json.dump(segment_meta, f, ensure_ascii=False, indent=2)
+    
+    print("セグメント生成終了・・・")
     messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {segment_dir_path}")
     
 def extract_valley_peak_pairs(valleys, peaks):
