@@ -1800,9 +1800,8 @@ def generate_segments():
     segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
     
     if not app.stream_analysis.valleys or not app.stream_analysis.peaks:
-        print("分析を行っていなかったので分析処理を実行します。")
-        thread = analyze_and_plot(app)
-        thread.join() # 終わるまで待機
+        print("分析を行っていないのでセグメント生成を実行できませんでした。")
+        return
 
     video_file = filedialog.askopenfilename(
         title="セグメント生成に使う動画ファイルを選択",
@@ -1814,19 +1813,24 @@ def generate_segments():
     
     print("セグメント生成開始・・・")
     segment_dir_path.mkdir(parents=True, exist_ok=True)
-    BUFFER = 300
+    BUFFER = 180
     segment_count = 1
     segment_meta = []
 
     # ▼ valley-peakペアで各セグメント動画生成＋区間情報記録
     pairs = extract_valley_peak_pairs(app.stream_analysis.valleys, app.stream_analysis.peaks)
     for start_valley, peak in pairs:
-        start = max(0, start_valley - BUFFER)
+        start = start_valley - BUFFER
+        # セグメントのスタート値がバッファ値以下だったら余白なしで行う
+        if start <= 0:
+            start = start_valley   # 余白なしでvalleyから
+
         end = peak + BUFFER
         duration = end - start
         segment_path = segment_dir_path / f"segment_{segment_count:02}.mp4"
         subprocess.run([
-            "ffmpeg", "-ss", str(timedelta(seconds=start)),
+            "ffmpeg", "-y",
+            "-ss", str(timedelta(seconds=start)),
             "-i", video_file,
             "-t", str(timedelta(seconds=duration)),
             "-c", "copy", str(segment_path)
