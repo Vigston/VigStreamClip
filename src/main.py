@@ -94,9 +94,9 @@ class App:
             # 必要なサブフォルダ
             (file_dir / "res").mkdir(exist_ok=True)
 
-            # res/setting.txt だけ初期化
+            # res/settings.txt だけ初期化
             if settings is not None:
-                setting_txt_file = file_dir / "res" / "setting.txt"
+                setting_txt_file = file_dir / "res" / "settings.txt"
                 with open(setting_txt_file, "w", encoding="utf-8") as f:
                     json.dump(settings, f, ensure_ascii=False, indent=2)
 
@@ -150,9 +150,9 @@ class App:
         @property
         def settings_file_path(self):
             if not self._project_file_path:
-                path = BASE_DIR / "res" / "setting.txt"
+                path = BASE_DIR / "res" / "settings.txt"
             else:
-                path = self._project_file_path / "res" / "setting.txt"
+                path = self._project_file_path / "res" / "settings.txt"
             
             return path
 
@@ -260,6 +260,7 @@ class App:
         setting_menu.add_command(label="解像度", command=lambda: open_resolution_window())
         setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window())
         setting_menu.add_command(label="題名スタイル", command=lambda: open_title_style_dialog())
+        setting_menu.add_command(label="弾幕スタイル", command=lambda: open_danmaku_style_window())
         setting_menu.add_separator()
         setting_menu.add_command(label="💾 設定を保存", command=lambda: (
             save_settings(),
@@ -363,6 +364,17 @@ settings = {
     "TitleAreaHeight": 200,    # 表示エリア高さ
     "TitleAlignV": "top",      # 文字の矩形内表示位置(y) 'top', 'center', 'bottom'
     "TitleAlignH": "center",   # 文字の矩形内表示位置(x) 'left', 'center', 'right'
+    
+    # 弾幕スタイル
+    "DanmakuEnabled": True,
+    "DanmakuFont": "Yu Gothic",
+    "DanmakuFontSize": 36,
+    "DanmakuColor": "#FFFFFFFF",
+    "DanmakuShadow": True,
+    "DanmakuShadowColor": "#000000",  # 影の色
+    "DanmakuTrackCount": 12,
+    "DanmakuDuration": 3.0,
+    "DanmakuSpeed": 1.0,              # スクロール速度係数
 }
 
 # whisperの使用モデルを設定
@@ -776,35 +788,46 @@ def split_long_subtitle(text: str, max_chars: int = 40, words: list = None) -> l
     return result
 
 def generate_comment_to_png_sequence(
-    comments,        # チャットデータ（dictリスト）
-    video_size,      # (幅, 高さ)
-    out_frames_dir,  # PNG保存先ディレクトリ
-    start_time,      # クリップの開始秒数
-    end_time,        # クリップの終了秒数
+    comments,
+    video_size,
+    out_frames_dir,
+    start_time,
+    end_time,
     fps=30,
-    duration_per_comment=3.0,
+    duration_per_comment=None,
     font_path=None
 ):
+    if not settings.get("DanmakuEnabled", True):
+        print("⚠️ 弾幕が無効化されているためスキップします")
+        return
+
     frame_count = int((end_time - start_time) * fps)
-    print(f"受け取ったコメント数: {len(comments)}")
-    print(f"動画サイズ: {video_size}")
-    print(f"開始: {start_time}, 終了: {end_time}, フレーム数: {frame_count}")
     W, H = video_size
-    font = ImageFont.truetype(font_path or "arial.ttf", 36)
-    num_tracks = 12
-    track_height = H // (num_tracks + 2)
-    tracks = [track_height * (i+1) for i in range(num_tracks)]
+
+    # スタイル設定の読み込み
+    font_size = settings.get("DanmakuFontSize", 36)
+    color_str = settings.get("DanmakuColor", "#FFFFFF")
+    show_shadow = settings.get("DanmakuShadow", True)
+    shadow_color = settings.get("DanmakuShadowColor", "#000000")
+    track_count = settings.get("DanmakuTrackCount", 12)
+    duration = duration_per_comment or settings.get("DanmakuDuration", 3.0)
+    speed_factor = settings.get("DanmakuSpeed", 1.0)
+
+    font = ImageFont.truetype(font_path or "arial.ttf", font_size)
+    track_height = H // (track_count + 2)
+    tracks = [track_height * (i+1) for i in range(track_count)]
+
     danmaku = []
     for i, c in enumerate(comments):
         t0 = float(c["time_in_seconds"]) - start_time
         if 0 <= t0 < (end_time - start_time):
-            y = tracks[i % num_tracks]
+            y = tracks[i % track_count]
             danmaku.append({
                 "text": c["message"],
                 "start": t0,
                 "y": y,
             })
-    print(f"danmakuに格納されたコメント数: {len(danmaku)}")
+
     out_frames_dir = Path(out_frames_dir)
     out_frames_dir.mkdir(parents=True, exist_ok=True)
     for f in range(frame_count):
@@ -813,13 +836,15 @@ def generate_comment_to_png_sequence(
         draw = ImageDraw.Draw(img)
         for d in danmaku:
             appear = d["start"]
-            if appear <= t < appear + duration_per_comment:
+            if appear <= t < appear + duration:
                 bbox = draw.textbbox((0, 0), d["text"], font=font)
-                w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                progress = (t - appear) / duration_per_comment
-                x = int(W - (W + w) * progress)
-                draw.text((x, d["y"]), d["text"], font=font, fill=(255,255,255,255))
-                #print(f"{f}: {d['text']} を ({x},{d['y']}) に描画")
+                w = bbox[2] - bbox[0]
+                progress = (t - appear) / duration
+                x = int(W - (W + w) * progress * speed_factor)
+                y = d["y"]
+                if show_shadow:
+                    draw.text((x+2, y+2), d["text"], font=font, fill=shadow_color)
+                draw.text((x, y), d["text"], font=font, fill=color_str)
         img.save(str(out_frames_dir / f"danmaku_{f:04d}.png"))
 
 def combine_video_with_danmaku_overlay(
@@ -1309,6 +1334,68 @@ def open_title_style_dialog():
         dialog.destroy()
     tk.Button(dialog, text="保存", command=save_settings_and_close).grid(row=8, column=0, columnspan=2)
 
+def open_danmaku_style_window():
+    global app
+    root = app.root
+    win = Toplevel(root)
+    win.title("弾幕スタイルの設定")
+    win.geometry("400x420")
+
+    entries = {}
+
+    def add_entry(label, key, var_type=str):
+        frame = Frame(win)
+        frame.pack(pady=4, anchor=W)
+        Label(frame, text=label, width=18, anchor=W).pack(side=LEFT)
+        val = settings.get(key)
+        var = StringVar(value=str(val)) if var_type is str else StringVar(value=str(int(val)))
+        entry = Entry(frame, textvariable=var, width=20)
+        entry.pack(side=LEFT)
+        entries[key] = (var, var_type)
+
+    # 表示ON/OFF
+    enabled_var = BooleanVar(value=settings.get("DanmakuEnabled", True))
+    Checkbutton(win, text="弾幕を表示する", variable=enabled_var).pack(pady=5)
+
+    # フォント選択
+    font_frame = Frame(win)
+    font_frame.pack(pady=4, anchor=W)
+    Label(font_frame, text="フォント", width=18, anchor=W).pack(side=LEFT)
+    font_var = StringVar(value=settings.get("DanmakuFont", "Yu Gothic"))
+    all_fonts = AVAILABLE_FONTS + [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
+    OptionMenu(font_frame, font_var, *all_fonts).pack(side=LEFT)
+
+    add_entry("フォントサイズ", "DanmakuFontSize", int)
+    add_entry("フォント色 (#RRGGBB)", "DanmakuColor", str)
+    add_entry("影の色 (#RRGGBB)", "DanmakuShadowColor", str)
+    add_entry("表示時間（秒）", "DanmakuDuration", float)
+    add_entry("表示レーン数", "DanmakuTrackCount", int)
+    add_entry("スクロール速度", "DanmakuSpeed", float)
+
+    shadow_var = BooleanVar(value=settings.get("DanmakuShadow", True))
+    Checkbutton(win, text="影を付ける", variable=shadow_var).pack(pady=5)
+
+    def save_danmaku_style():
+        try:
+            settings["DanmakuEnabled"] = enabled_var.get()
+            settings["DanmakuFont"] = font_var.get()
+            settings["DanmakuShadow"] = shadow_var.get()
+            for key, (var, vartype) in entries.items():
+                val = var.get().strip()
+                if vartype == int:
+                    settings[key] = int(val)
+                elif vartype == float:
+                    settings[key] = float(val)
+                else:
+                    settings[key] = val
+            save_settings()
+            messagebox.showinfo("保存完了", "弾幕スタイルが保存されました。")
+            win.destroy()
+        except Exception as e:
+            messagebox.showerror("エラー", f"保存中にエラーが発生しました: {e}")
+
+    Button(win, text="保存", command=save_danmaku_style).pack(pady=10)
+
 # 字幕の焼き直し
 def clip_reburn_gui():
     # 元MP4
@@ -1380,9 +1467,9 @@ def save_settings():
     fileMgr = app.file_manager
     try:
         if fileMgr.project_file_path:  # プロジェクト選択中なら個別に
-            setting_file_path = fileMgr.project_file_path / "res" / "setting.txt"
+            setting_file_path = fileMgr.project_file_path / "res" / "settings.txt"
         else:  # 何も開いてなければ共通設定
-            setting_file_path = BASE_DIR / "common_settings.txt"
+            setting_file_path = BASE_DIR / "res" / "settings.txt"
         setting_file_path.parent.mkdir(parents=True, exist_ok=True)
         with open(setting_file_path, "w", encoding="utf-8") as f:
             import json
@@ -1964,18 +2051,8 @@ def main():
         print(f"{App.FileManager.__name__}の取得に失敗しました。")
         return
     
-    settings_file_path = fileMgr.settings_file_path
-
-    
     # 設定情報読み込み
-    if settings_file_path.exists():
-        try:
-            with open(settings_file_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                settings.update(loaded)
-                print("✅ 設定ファイルから読み込みました")
-        except Exception as e:
-            print(f"⚠️ 設定ファイルの読み込みに失敗: {e}")
+    fileMgr.load_file_settings(app.settings)
     
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
