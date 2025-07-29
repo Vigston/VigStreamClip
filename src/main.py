@@ -37,8 +37,9 @@ def get_base_dir():
 
 plt.rcParams["font.family"] = "Yu Gothic"
 
-BASE_DIR = get_base_dir()
-font_dir_path = BASE_DIR / "fonts"
+BASE_DIR_PATH = get_base_dir()
+MODEL_DIR_PATH = BASE_DIR_PATH / "models"
+FONT_DIR_PATH = BASE_DIR_PATH / "fonts"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
@@ -123,7 +124,7 @@ class App:
         def font_dir_path(self):
             path: Path = None
             if not self._project_file_path:
-                path = BASE_DIR / "fonts"
+                path = BASE_DIR_PATH / "fonts"
             else:
                 path = self._project_file_path / "fonts"
             path.mkdir(exist_ok=True)
@@ -132,7 +133,7 @@ class App:
         def segment_dir_path(self, title_name):
             path: Path = None
             if not self._project_file_path:
-                path = BASE_DIR / title_name / "output" / "segments"
+                path = BASE_DIR_PATH / title_name / "output" / "segments"
             else:
                 path = self._project_file_path / title_name / "output" / "segments"
             path.mkdir(parents=True, exist_ok=True)
@@ -141,7 +142,7 @@ class App:
         def output_dir_path(self, title_name):
             path: Path = None
             if not self._project_file_path:
-                path = BASE_DIR / title_name / "output"
+                path = BASE_DIR_PATH / title_name / "output"
             else:
                 path = self._project_file_path / title_name / "output"
             path.mkdir(parents=True, exist_ok=True)
@@ -150,7 +151,7 @@ class App:
         @property
         def settings_file_path(self):
             if not self._project_file_path:
-                path = BASE_DIR / "res" / "settings.txt"
+                path = BASE_DIR_PATH / "res" / "settings.txt"
             else:
                 path = self._project_file_path / "res" / "settings.txt"
             
@@ -207,7 +208,7 @@ class App:
         self.label: tk.Label = None
         self.entry: tk.Entry = None
         self.stream_analysis: StreamAnalysis = StreamAnalysis()
-        self.file_manager = self.FileManager(BASE_DIR)
+        self.file_manager = self.FileManager(BASE_DIR_PATH)
         self._project_file_path_name = None  # UI選択中ファイル名
         self.settings = settings  # 各ファイルごとの設定をこのdictに切り替え保存する
     
@@ -377,10 +378,8 @@ settings = {
     "DanmakuSpeed": 1.0,              # スクロール速度係数
 }
 
-# whisperの使用モデルを設定
-whisper_model = whisper.load_model("large-v3", device="cuda")
-
 app: App = None
+whisper_model: whisper = None
 
 COLOR_MAP = {
     "赤": "&H000033FF&",
@@ -653,10 +652,10 @@ def scan_custom_fonts() -> dict:
     fonts/ 以下のすべてのサブフォルダから .ttf を探し、
     {フォント名: フルパス} を返す
     """
-    font_dir_path.mkdir(exist_ok=True)
+    FONT_DIR_PATH.mkdir(exist_ok=True)
     font_map = {}
 
-    for font_path in font_dir_path.rglob("*.ttf"):  # ← 再帰探索に変更！
+    for font_path in FONT_DIR_PATH.rglob("*.ttf"):  # ← 再帰探索に変更！
         try:
             tt = TTFont(font_path)
             for record in tt["name"].names:
@@ -914,6 +913,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     セグメントの絶対秒(start_sec, end_sec)は毎回 segment_info.json からファイル名で検索して取得する。
     """
     global app
+    global whisper_model
     fileMgr = app.file_manager
     segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
 
@@ -1469,7 +1469,7 @@ def save_settings():
         if fileMgr.project_file_path:  # プロジェクト選択中なら個別に
             setting_file_path = fileMgr.project_file_path / "res" / "settings.txt"
         else:  # 何も開いてなければ共通設定
-            setting_file_path = BASE_DIR / "res" / "settings.txt"
+            setting_file_path = BASE_DIR_PATH / "res" / "settings.txt"
         setting_file_path.parent.mkdir(parents=True, exist_ok=True)
         with open(setting_file_path, "w", encoding="utf-8") as f:
             import json
@@ -1558,6 +1558,7 @@ def generate_clips(segment_path: Path):
         segment_path (Path): クリップ元となるセグメント動画のファイルパス
     """
     global app
+    global whisper_model
     fileMgr = app.file_manager
     segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
     output_dir_path = fileMgr.output_dir_path(app.stream_analysis.safe_title)
@@ -1978,7 +1979,7 @@ def generate_all_thumbnails_gui():
         messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
         return
     # output/thumbnail フォルダ作成
-    thumbnail_dir = BASE_DIR / "output" / "thumbnail"
+    thumbnail_dir = BASE_DIR_PATH / "output" / "thumbnail"
     thumbnail_dir.mkdir(parents=True, exist_ok=True)
     pairs = extract_valley_peak_pairs(valleys, peaks)
     for idx, (start_sec, end_sec) in enumerate(pairs, 1):  # 1から開始
@@ -2038,6 +2039,18 @@ def generate_all_thumbnails_gui():
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
     global app
+    global whisper_model
+    
+    print(f"VigstreamClipの起動開始")
+    
+    # whisperの使用モデルを設定
+    print(f"whisper(音声認識ライブラリ)の読み込み開始・・・")
+    try:
+        whisper_model = whisper.load_model("large-v3", device="cuda", download_root=str(MODEL_DIR_PATH))
+    except Exception as e:
+        print("CUDAでWhisper読み込みに失敗、CPUモードで再試行します:", e)
+        whisper_model = whisper.load_model("large-v3", device="cpu", download_root=str(MODEL_DIR_PATH))
+    print(f"whisper(音声認識ライブラリ)の読み込みが完了しました・・・")
     
     # 使用時にセット(chatgptのAPIキー)
     openai.api_key = load_api_key_from_file()
@@ -2060,9 +2073,10 @@ def main():
     
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
-
+    
     # アプリケーションの実行処理
     app.run()
+    print(f"アプリケーション実行開始します")
 
 if __name__ == "__main__":
     main()

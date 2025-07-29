@@ -189,3 +189,4 @@ cython_debug/
 /release
 src/test.py
 /projects
+/models
