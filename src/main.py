@@ -2023,6 +2023,8 @@ def draw_title_on_img(img, title, font, settings):
 
 def generate_all_thumbnails_gui():
     global app
+    fileMgr = app.file_manager
+    output_dir_path = fileMgr.output_dir_path(app.stream_analysis.safe_title)
     
     mp4_path = filedialog.askopenfilename(
         title="サムネイル生成する元動画ファイルを選択",
@@ -2050,8 +2052,8 @@ def generate_all_thumbnails_gui():
         messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
         return
     # output/thumbnail フォルダ作成
-    thumbnail_dir = BASE_DIR_PATH / "output" / "thumbnail"
-    thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    thumbnail_dir_path = output_dir_path / "thumbnail"
+    thumbnail_dir_path.mkdir(parents=True, exist_ok=True)
     pairs = extract_valley_peak_pairs(valleys, peaks)
     for idx, (start_sec, end_sec) in enumerate(pairs, 1):  # 1から開始
         if end_sec > len(audio_y):
@@ -2065,9 +2067,9 @@ def generate_all_thumbnails_gui():
         abs_max_sec = start_sec + rel_max_idx
         # サムネイルファイル名例: 元動画名_segment01_thumbnail.jpg
         base_name = f"{video_path.stem}_segment{idx:02}_thumbnail"
-        thumbnail_base_pattern = thumbnail_dir / (base_name + "_base_%d.jpg")  # ffmpeg出力パターン
-        thumbnail_base_file = thumbnail_dir / (base_name + "_base_1.jpg")      # 実際の出力ファイル
-        output_thumbnail = thumbnail_dir / (base_name + ".jpg")
+        thumbnail_base_pattern = thumbnail_dir_path / (base_name + "_base_%d.jpg")  # ffmpeg出力パターン
+        thumbnail_base_file = thumbnail_dir_path / (base_name + "_base_1.jpg")      # 実際の出力ファイル
+        output_thumbnail = thumbnail_dir_path / (base_name + ".jpg")
         try:
             subprocess.run([
                 "ffmpeg", "-y",
