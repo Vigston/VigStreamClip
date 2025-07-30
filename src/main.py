@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from datetime import timedelta
 import openai
 from tkinter import *
-from fontTools.ttLib import TTFont  # ← fontTools を使用
+from fontTools.ttLib import TTFont
 import sys
 import logging
 from tkinter.scrolledtext import ScrolledText
@@ -157,9 +157,9 @@ class App:
         def segment_dir_path(self, title_name):
             path: Path = None
             if not self._project_file_path:
-                path = BASE_DIR_PATH / title_name / "output" / "segments"
+                path = BASE_DIR_PATH / "output" / title_name / "segments"
             else:
-                path = self._project_file_path / title_name / "output" / "segments"
+                path = self._project_file_path / "output" / title_name / "segments"
             path.mkdir(parents=True, exist_ok=True)
             return path
 
@@ -283,9 +283,10 @@ class App:
         setting_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="設定", menu=setting_menu)
         setting_menu.add_command(label="解像度", command=lambda: open_resolution_window())
-        setting_menu.add_command(label="字幕スタイル", command=lambda: open_subtitle_style_window())
-        setting_menu.add_command(label="題名スタイル", command=lambda: open_title_style_dialog())
-        setting_menu.add_command(label="弾幕スタイル", command=lambda: open_danmaku_style_window())
+        setting_menu.add_command(label="字幕", command=lambda: open_subtitle_style_window())
+        setting_menu.add_command(label="サムネイル", command=lambda: open_title_style_dialog())
+        setting_menu.add_command(label="弾幕", command=lambda: open_danmaku_style_window())
+        setting_menu.add_command(label="クリップ", command=lambda: open_clip_setting_window())
         setting_menu.add_separator()
         setting_menu.add_command(label="💾 設定を保存", command=lambda: (
             save_settings(),
@@ -389,6 +390,7 @@ settings = {
     "TitleAreaHeight": 200,    # 表示エリア高さ
     "TitleAlignV": "top",      # 文字の矩形内表示位置(y) 'top', 'center', 'bottom'
     "TitleAlignH": "center",   # 文字の矩形内表示位置(x) 'left', 'center', 'right'
+    "ThumbnailTitle": "",  # 空文字で未指定（デフォルトは元動画タイトル）
     
     # 弾幕スタイル
     "DanmakuEnabled": True,
@@ -400,6 +402,11 @@ settings = {
     "DanmakuTrackCount": 12,
     "DanmakuDuration": 3.0,
     "DanmakuSpeed": 1.0,              # スクロール速度係数
+    
+    # Clip関連（クリップ長・無音閾値）
+    "MinClipLength": 60,
+    "MaxClipLength": 180,
+    "SilenceGap": 1.0,
 }
 
 app: App = None
@@ -1333,6 +1340,11 @@ def open_title_style_dialog():
     tk.Label(dialog, text="横位置:").grid(row=7, column=0)
     h_align_var = tk.StringVar(value=settings.get("TitleAlignH", "center"))
     ttk.Combobox(dialog, textvariable=h_align_var, values=["left", "center", "right"]).grid(row=7, column=1)
+    
+    # タイトルテキスト（手動入力）
+    tk.Label(dialog, text="サムネイル表示文字:").grid(row=8, column=0)
+    title_text_var = tk.StringVar(value=settings.get("ThumbnailTitle", ""))
+    tk.Entry(dialog, textvariable=title_text_var, width=30).grid(row=8, column=1)
 
     # 保存
     def save_settings_and_close():
@@ -1344,10 +1356,11 @@ def open_title_style_dialog():
         settings["TitleAreaHeight"] = h_var.get()
         settings["TitleAlignV"] = v_var.get()
         settings["TitleAlignH"] = h_align_var.get()
+        settings["ThumbnailTitle"] = title_text_var.get()
         # フォントやサイズもあればここで
         save_settings()  # 保存関数呼ぶ
         dialog.destroy()
-    tk.Button(dialog, text="保存", command=save_settings_and_close).grid(row=8, column=0, columnspan=2)
+    tk.Button(dialog, text="保存", command=save_settings_and_close).grid(row=9, column=0, columnspan=2)
 
 def open_danmaku_style_window():
     global app
@@ -1410,6 +1423,45 @@ def open_danmaku_style_window():
             messagebox.showerror("エラー", f"保存中にエラーが発生しました: {e}")
 
     Button(win, text="保存", command=save_danmaku_style).pack(pady=10)
+
+def open_clip_setting_window():
+    global app
+    root = app.root
+    win = Toplevel(root)
+    win.title("クリップ設定")
+    win.geometry("300x200")
+
+    entries = {}
+
+    def add_entry(label, key, var_type):
+        frame = Frame(win)
+        frame.pack(pady=5, anchor=W)
+        Label(frame, text=label, width=15, anchor=W).pack(side=LEFT)
+        val = settings.get(key)
+        var = StringVar(value=str(val))
+        entry = Entry(frame, textvariable=var, width=10)
+        entry.pack(side=LEFT)
+        entries[key] = (var, var_type)
+
+    add_entry("最小長（秒）", "MinClipLength", int)
+    add_entry("最大長（秒）", "MaxClipLength", int)
+    add_entry("無音閾値（秒）", "SilenceGap", float)
+
+    def save_clip_settings():
+        try:
+            for key, (var, var_type) in entries.items():
+                value = var.get().strip()
+                if var_type == int:
+                    settings[key] = int(value)
+                else:
+                    settings[key] = float(value)
+            save_settings()
+            messagebox.showinfo("保存完了", "クリップ設定を保存しました。")
+            win.destroy()
+        except Exception as e:
+            messagebox.showerror("エラー", f"保存に失敗しました: {e}")
+
+    Button(win, text="保存", command=save_clip_settings).pack(pady=10)
 
 # 字幕の焼き直し
 def clip_reburn_gui():
@@ -1598,11 +1650,15 @@ def generate_clips(segment_path: Path):
         segment_end_time = my_info["end_sec"]
         print(f"🔗 このセグメントは元配信の {segment_start_time}s ~ {segment_end_time}s 区間です")
 
-        # --- 以降は従来どおり ---
         result = whisper_model.transcribe(str(segment_path), language="ja", task="transcribe")
         segments = result["segments"]
         print(f"📝 字幕セグメント数: {len(segments)}")
-        clips = group_segments_by_duration(segments, MIN_DURATION, MAX_DURATION)
+        clips = group_segments_by_duration(
+            segments,
+            settings.get("MinClipLength", 60),
+            settings.get("MaxClipLength", 180),
+            settings.get("SilenceGap", 1.0)
+        )
         print(f"📌 抽出されたクリップ数: {len(clips)}")
         output_dir = output_dir_path / segment_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1989,7 +2045,7 @@ def generate_all_thumbnails_gui():
     valleys = app.stream_analysis.valleys
     peaks = app.stream_analysis.peaks
     audio_y = app.stream_analysis.audio_y
-    title = app.stream_analysis.raw_title or video_path.stem
+    title = settings.get("ThumbnailTitle") or app.stream_analysis.raw_title or video_path.stem
     if not valleys or not peaks or not audio_y:
         messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
         return
@@ -2043,7 +2099,7 @@ def generate_all_thumbnails_gui():
                 "TitleAlignH": align_h,
             }
             
-            img = draw_title_on_img(app, img, title, font, settings_for_pos)
+            img = draw_title_on_img(img, title, font, settings_for_pos)
             img.save(output_thumbnail)
             thumbnail_base_file.unlink(missing_ok=True)
             print(f"✅ サムネイル生成: {output_thumbnail}")
