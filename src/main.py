@@ -25,9 +25,33 @@ import numpy as np
 import soundfile as sf
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
-from pydub import AudioSegment, silence
 import traceback
 import copy
+from shutil import which
+
+# exe実行でUTF-8の使用を強制
+os.environ["PYTHONUTF8"] = "1"
+
+# 直接ファイルを開く場合はこれを通して行う
+def resource_path(relative_path: str) -> Path:
+    """
+    PyInstaller で実行されているかを判定し、実行時の一時フォルダを解決
+    """
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / relative_path
+    return Path(__file__).resolve().parent / ".." / relative_path
+
+# ffmpeg/ffprobe の実行パスを追加
+ffmpeg_dir_path = resource_path("libs/ffmpeg-7.1.1-full_build/bin")
+ffmpeg_path = ffmpeg_dir_path / "ffmpeg.exe"
+os.environ["PATH"] = str(ffmpeg_dir_path) + os.pathsep + os.environ.get("PATH", "")
+# pydubにffmpeg.exeの実行パスを追加
+from pydub import AudioSegment, silence, utils
+AudioSegment.converter = str(ffmpeg_path)
+utils.get_encoder_name = lambda: str(AudioSegment.converter)
+#print(f"[DEBUG] ffmpeg_path = {ffmpeg_path}")
+#print(f"[DEBUG] ffmpeg.exe exists? {ffmpeg_path.exists()}")
+#print(f"[DEBUG] shutil.which('ffmpeg') = {which('ffmpeg')}")
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -142,9 +166,9 @@ class App:
         def output_dir_path(self, title_name):
             path: Path = None
             if not self._project_file_path:
-                path = BASE_DIR_PATH / title_name / "output"
+                path = BASE_DIR_PATH / "output" / title_name
             else:
-                path = self._project_file_path / title_name / "output"
+                path = self._project_file_path / "output" / title_name
             path.mkdir(parents=True, exist_ok=True)
             return path
 
@@ -407,15 +431,6 @@ COLOR_MAP = {
     "紺": "&H00660000&",
     "ライム": "&H0000FF80&",
 }
-
-# 直接ファイルを開く場合はこれを通して行う
-def resource_path(relative_path: str) -> Path:
-    """
-    PyInstaller で実行されているかを判定し、実行時の一時フォルダを解決
-    """
-    if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / relative_path
-    return Path(__file__).resolve().parent / ".." / relative_path
 
 # ChatGptのAPIキーを読み込み
 def load_api_key_from_file() -> str:

@@ -190,3 +190,4 @@ cython_debug/
 src/test.py
 /projects
 /models
+/libs

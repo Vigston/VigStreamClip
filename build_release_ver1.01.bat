@@ -26,12 +26,15 @@ pyinstaller ^
   --clean ^
   --add-data "assets;assets" ^
   --add-data "fonts;fonts" ^
+  --add-binary "libs/ffmpeg-7.1.1-full_build/bin/ffmpeg.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
+  --add-binary "libs/ffmpeg-7.1.1-full_build/bin/ffprobe.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
   "%SCRIPT%"
 
 REM リソースフォルダを出力先にコピー（上書きあり）
 xcopy /E /I /Y assets %DIST%\assets
 xcopy /E /I /Y fonts %DIST%\fonts
 xcopy /E /I /Y models %DIST%\models
+xcopy /E /I /Y libs %DIST%\libs
 
 echo.
 echo ✅ ビルド完了！出力: %DIST%\%NAME%.exe
