@@ -960,7 +960,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     abs_end = segment_start_time + clip.end_time
 
     # クリップごとの作業ディレクトリ
-    clip_dir = output_dir / "clip" / f"clip_{index}"
+    clip_dir = output_dir / f"clip_{index}"
     clip_dir.mkdir(parents=True, exist_ok=True)
 
     # 各ファイルパス
@@ -1070,7 +1070,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     # ⑨ 弾幕PNG連番生成
     video_resolution = get_video_resolution(clip_path)
     w, h = map(int, video_resolution.split("x"))
-    font_path = CUSTOM_FONT_PATHS.get(settings.get("Font"), None)
+    font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"), "Yu Gothic")
     fps = 30
     generate_comment_to_png_sequence(
         comments,
@@ -1660,7 +1660,7 @@ def generate_clips(segment_path: Path):
             settings.get("SilenceGap", 1.0)
         )
         print(f"📌 抽出されたクリップ数: {len(clips)}")
-        output_dir = output_dir_path / segment_path.stem
+        output_dir = output_dir_path / "clip" / segment_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
         
         stream_title = app.stream_analysis.safe_title
@@ -2002,7 +2002,7 @@ def draw_title_on_img(img, title, font, settings):
     # ラップ
     lines = wrap_title_text(title, font, area_w)
     # 位置
-    x0, y, area_w, align_h, line_h = calc_title_position(app, img, lines, font, settings)
+    x0, y, area_w, align_h, line_h = calc_title_position(img, lines, font, settings)
     for line in lines:
         text_w, _ = get_text_size(line, font)
         # 水平
@@ -2045,7 +2045,7 @@ def generate_all_thumbnails_gui():
     valleys = app.stream_analysis.valleys
     peaks = app.stream_analysis.peaks
     audio_y = app.stream_analysis.audio_y
-    title = settings.get("ThumbnailTitle") or app.stream_analysis.raw_title or video_path.stem
+    title = app.stream_analysis.raw_title or video_path.stem
     if not valleys or not peaks or not audio_y:
         messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
         return
@@ -2083,7 +2083,7 @@ def generate_all_thumbnails_gui():
                 if font_path:
                     font = ImageFont.truetype(font_path, title_font_size)
                 else:
-                    font = ImageFont.truetype("arial.ttf", title_font_size)
+                    font = ImageFont.truetype("Noto Sans JP", title_font_size)
             except Exception:
                 font = ImageFont.load_default()
             # 描画エリア
