@@ -59,7 +59,7 @@ def get_base_dir():
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent.parent
 
-plt.rcParams["font.family"] = "Yu Gothic"
+plt.rcParams["font.family"] = "Noto Sans JP"
 
 BASE_DIR_PATH = get_base_dir()
 MODEL_DIR_PATH = BASE_DIR_PATH / "models"
@@ -70,11 +70,92 @@ MAX_DURATION = 180
 # カスタムフォントパス
 CUSTOM_FONT_PATHS = {}
 # 使用可能なフォント一覧
-AVAILABLE_FONTS = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"]
+AVAILABLE_FONTS = [
+    "Noto Sans",
+    "Noto Sans Black",
+    "Noto Sans Condensed",
+    "Noto Sans Condensed Black",
+    "Noto Sans Condensed ExtraBold",
+    "Noto Sans Condensed ExtraLight",
+    "Noto Sans Condensed Light",
+    "Noto Sans Condensed Medium",
+    "Noto Sans Condensed SemiBold",
+    "Noto Sans Condensed Thin",
+    "Noto Sans ExtraBold",
+    "Noto Sans ExtraCondensed",
+    "Noto Sans ExtraCondensed Black",
+    "Noto Sans ExtraCondensed ExtraBold",
+    "Noto Sans ExtraCondensed ExtraLight",
+    "Noto Sans ExtraCondensed Light",
+    "Noto Sans ExtraCondensed Medium",
+    "Noto Sans ExtraCondensed SemiBold",
+    "Noto Sans ExtraCondensed Thin",
+    "Noto Sans ExtraLight",
+    "Noto Sans JP",
+    "Noto Sans JP Black",
+    "Noto Sans JP ExtraBold",
+    "Noto Sans JP ExtraLight",
+    "Noto Sans JP Light",
+    "Noto Sans JP Medium",
+    "Noto Sans JP SemiBold",
+    "Noto Sans JP Thin",
+    "Noto Sans Light",
+    "Noto Sans Medium",
+    "Noto Sans SemiBold",
+    "Noto Sans SemiCondensed",
+    "Noto Sans SemiCondensed Black",
+    "Noto Sans SemiCondensed ExtraBold",
+    "Noto Sans SemiCondensed ExtraLight",
+    "Noto Sans SemiCondensed Light",
+    "Noto Sans SemiCondensed Medium",
+    "Noto Sans SemiCondensed SemiBold",
+    "Noto Sans SemiCondensed Thin",
+    "Noto Sans Thin",
+    "Noto Serif",
+    "Noto Serif Black",
+    "Noto Serif Condensed",
+    "Noto Serif Condensed Black",
+    "Noto Serif Condensed ExtraBold",
+    "Noto Serif Condensed ExtraLight",
+    "Noto Serif Condensed Light",
+    "Noto Serif Condensed Medium",
+    "Noto Serif Condensed SemiBold",
+    "Noto Serif Condensed Thin",
+    "Noto Serif ExtraBold",
+    "Noto Serif ExtraCondensed",
+    "Noto Serif ExtraCondensed Black",
+    "Noto Serif ExtraCondensed ExtraBold",
+    "Noto Serif ExtraCondensed ExtraLight",
+    "Noto Serif ExtraCondensed Light",
+    "Noto Serif ExtraCondensed Medium",
+    "Noto Serif ExtraCondensed SemiBold",
+    "Noto Serif ExtraCondensed Thin",
+    "Noto Serif ExtraLight",
+    "Noto Serif Light",
+    "Noto Serif Medium",
+    "Noto Serif SemiBold",
+    "Noto Serif SemiCondensed",
+    "Noto Serif SemiCondensed Black",
+    "Noto Serif SemiCondensed ExtraBold",
+    "Noto Serif SemiCondensed ExtraLight",
+    "Noto Serif SemiCondensed Light",
+    "Noto Serif SemiCondensed Medium",
+    "Noto Serif SemiCondensed SemiBold",
+    "Noto Serif SemiCondensed Thin",
+    "Noto Serif Thin",
+    "Source Sans 3",
+    "Source Sans 3 Black",
+    "Source Sans 3 ExtraBold",
+    "Source Sans 3 ExtraLight",
+    "Source Sans 3 Light",
+    "Source Sans 3 Medium",
+    "Source Sans 3 SemiBold",
+    "Tanuki Permanent Marker",
+]
 
 # フォントごとの横幅係数（1pt あたり何 px を占有するか）
 FONT_WIDTH_RATIO = {
-    "Yu Gothic": 3.94,
+    "Noto Sans JP": 3.94,
 }
 
 # デバッグ出力(Tkinterの方のログをVScodeでも確認できるようにするため)
@@ -372,7 +453,7 @@ settings = {
     "Resolution": "1920x1080",
     
     # 字幕スタイル
-    "Font": "Yu Gothic",
+    "Font": "Noto Sans JP",
     "FontSize": 24,
     "Outline": 2,
     "OutlineColor": "&H00000000",
@@ -382,7 +463,7 @@ settings = {
     "Alignment": 2,
     
     # タイトルスタイル
-    "TitleFont": "Yu Gothic",
+    "TitleFont": "Noto Sans JP",
     "TitleFontSize": 120,
     "TitleAreaX": 0,           # 画像左上からのX座標
     "TitleAreaY": 0,           # 画像左上からのY座標
@@ -394,7 +475,7 @@ settings = {
     
     # 弾幕スタイル
     "DanmakuEnabled": True,
-    "DanmakuFont": "Yu Gothic",
+    "DanmakuFont": "Noto Sans JP",
     "DanmakuFontSize": 36,
     "DanmakuColor": "#FFFFFFFF",
     "DanmakuShadow": True,
@@ -1009,7 +1090,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     corrected = call_gpt_proofread_segments(segments)
 
     # 字幕max_width計算
-    font_name = settings.get("Font", "Yu Gothic")
+    font_name = settings.get("Font", "Noto Sans JP")
     font_size = settings.get("FontSize", 24)
     resolution = get_video_resolution(clip_path)
     max_width = estimate_max_width(resolution, font_name, font_size)
@@ -1070,7 +1151,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     # ⑨ 弾幕PNG連番生成
     video_resolution = get_video_resolution(clip_path)
     w, h = map(int, video_resolution.split("x"))
-    font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"), "Yu Gothic")
+    font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"), "Noto Sans JP")
     fps = 30
     generate_comment_to_png_sequence(
         comments,
@@ -1305,8 +1386,8 @@ def open_title_style_dialog():
 
     # ▼ フォント名選択
     tk.Label(dialog, text="フォント名:").grid(row=0, column=0)
-    title_font_var = tk.StringVar(value=settings.get("TitleFont", "Yu Gothic"))
-    font_choices = ["Yu Gothic", "Noto Sans JP", "MS Gothic", "Arial", "Meiryo"] + list(CUSTOM_FONT_PATHS.keys())
+    title_font_var = tk.StringVar(value=settings.get("TitleFont", "Noto Sans JP"))
+    font_choices = AVAILABLE_FONTS
     tk.OptionMenu(dialog, title_font_var, *font_choices).grid(row=0, column=1)
 
     # ▼ フォントサイズ
@@ -1389,7 +1470,7 @@ def open_danmaku_style_window():
     font_frame = Frame(win)
     font_frame.pack(pady=4, anchor=W)
     Label(font_frame, text="フォント", width=18, anchor=W).pack(side=LEFT)
-    font_var = StringVar(value=settings.get("DanmakuFont", "Yu Gothic"))
+    font_var = StringVar(value=settings.get("DanmakuFont", "Noto Sans JP"))
     all_fonts = AVAILABLE_FONTS + [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     OptionMenu(font_frame, font_var, *all_fonts).pack(side=LEFT)
 
@@ -1852,12 +1933,12 @@ def analyze_and_plot() -> threading.Thread:
             ax1 = plt.gca()
             ax2 = ax1.twinx()  # 右Y軸
             ax2.plot(audio_x, audio_y, color="orange", alpha=0.5, label="音量(RMS dB)")
-            ax2.set_ylabel("音量（dB, 1秒毎）", fontname="Yu Gothic")
+            ax2.set_ylabel("音量（dB, 1秒毎）", fontname="Noto Sans JP")
     
         plt.xticks(app.stream_analysis.x, app.stream_analysis.x_labels)
         plt.xlabel("動画時間（時:分）")
-        plt.ylabel("チャット数（5分単位）", fontname="Yu Gothic")
-        plt.title(app.stream_analysis.raw_title, fontname="Yu Gothic")
+        plt.ylabel("チャット数（5分単位）", fontname="Noto Sans JP")
+        plt.title(app.stream_analysis.raw_title, fontname="Noto Sans JP")
         plt.grid()
         plt.legend(loc="upper left")
         plt.tight_layout()
@@ -2034,7 +2115,7 @@ def generate_all_thumbnails_gui():
         print("❌ 動画ファイルが選択されませんでした")
         return
     # ▼ サムネイル題名スタイル設定の取得（なければデフォルト）
-    title_font_name = settings.get("TitleFont", "Yu Gothic")
+    title_font_name = settings.get("TitleFont", "Noto Sans JP")
     title_font_size = settings.get("TitleFontSize", 120)
     area_x = settings.get("TitleAreaX", 0)
     area_y = settings.get("TitleAreaY", 0)
