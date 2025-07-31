@@ -29,43 +29,38 @@ import traceback
 import copy
 from shutil import which
 
-# exe実行でUTF-8の使用を強制
-os.environ["PYTHONUTF8"] = "1"
-
-# 直接ファイルを開く場合はこれを通して行う
-def resource_path(relative_path: str) -> Path:
-    """
-    PyInstaller で実行されているかを判定し、実行時の一時フォルダを解決
-    """
-    if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / relative_path
-    return Path(__file__).resolve().parent / ".." / relative_path
-
-# ffmpeg/ffprobe の実行パスを追加
-ffmpeg_dir_path = resource_path("libs/ffmpeg-7.1.1-full_build/bin")
-ffmpeg_path = ffmpeg_dir_path / "ffmpeg.exe"
-os.environ["PATH"] = str(ffmpeg_dir_path) + os.pathsep + os.environ.get("PATH", "")
-# pydubにffmpeg.exeの実行パスを追加
-from pydub import AudioSegment, silence, utils
-AudioSegment.converter = str(ffmpeg_path)
-utils.get_encoder_name = lambda: str(AudioSegment.converter)
-#print(f"[DEBUG] ffmpeg_path = {ffmpeg_path}")
-#print(f"[DEBUG] ffmpeg.exe exists? {ffmpeg_path.exists()}")
-#print(f"[DEBUG] shutil.which('ffmpeg') = {which('ffmpeg')}")
-
 # 基本ディレクトリ取得
 def get_base_dir():
-    if hasattr(sys, "_MEIPASS"):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    if getattr(sys, 'frozen', False):
+        # PyInstaller でビルドされた .exe を実行中
+        return Path(sys.executable).parent.parent
+    else:
+        # 通常のスクリプト実行
+        return Path(__file__).resolve().parent.parent
 
+# exe実行でUTF-8の使用を強制
+os.environ["PYTHONUTF8"] = "1"
+# matplotlibで使うフォント指定
 plt.rcParams["font.family"] = "Noto Sans JP"
 
 BASE_DIR_PATH = get_base_dir()
 MODEL_DIR_PATH = BASE_DIR_PATH / "models"
 FONT_DIR_PATH = BASE_DIR_PATH / "fonts"
+ASSET_DIR_PATH = BASE_DIR_PATH / "assets"
+FFMPEG_DIR_PATH = BASE_DIR_PATH / "libs/ffmpeg-7.1.1-full_build/bin"
+FFMPEG_PATH = FFMPEG_DIR_PATH / "ffmpeg.exe"
 MIN_DURATION = 60
 MAX_DURATION = 180
+
+# ffmpeg/ffprobe の実行パスを追加
+os.environ["PATH"] = str(FFMPEG_DIR_PATH) + os.pathsep + os.environ.get("PATH", "")
+# pydubにffmpeg.exeの実行パスを追加
+from pydub import AudioSegment, silence, utils
+AudioSegment.converter = str(FFMPEG_PATH)
+utils.get_encoder_name = lambda: str(AudioSegment.converter)
+#print(f"[DEBUG] ffmpeg_path = {ffmpeg_path}")
+#print(f"[DEBUG] ffmpeg.exe exists? {ffmpeg_path.exists()}")
+#print(f"[DEBUG] shutil.which('ffmpeg') = {which('ffmpeg')}")
 
 # カスタムフォントパス
 CUSTOM_FONT_PATHS = {}
@@ -236,12 +231,17 @@ class App:
             return path
 
         def segment_dir_path(self, title_name):
+            if title_name is "":
+                return
+            
             path: Path = None
             if not self._project_file_path:
                 path = BASE_DIR_PATH / "output" / title_name / "segments"
             else:
                 path = self._project_file_path / "output" / title_name / "segments"
-            path.mkdir(parents=True, exist_ok=True)
+                
+            if not path is None:
+                path.mkdir(parents=True, exist_ok=True)
             return path
 
         def output_dir_path(self, title_name):
@@ -522,7 +522,7 @@ COLOR_MAP = {
 
 # ChatGptのAPIキーを読み込み
 def load_api_key_from_file() -> str:
-    key_path = resource_path("assets/sec/openai_key.txt")
+    key_path =  ASSET_DIR_PATH / "sec" / "openai_key.txt"
     with open(key_path, "r", encoding="utf-8") as f:
         return f.readline().strip()
 
@@ -1294,7 +1294,7 @@ def open_subtitle_style_window():
         help_text.pack(padx=10, pady=10)
 
         try:
-            with open(resource_path(os.path.join(os.path.dirname(__file__), '..', 'res', 'subtitle_style_help.txt')), encoding="utf-8") as f:
+            with open(BASE_DIR_PATH / "res" / "subtitle_style_help.txt", encoding="utf-8") as f:
                 help_content = f.read()
         except Exception as e:
             help_content = f"[エラー] 説明ファイルの読み込みに失敗しました:{e}"
@@ -2128,7 +2128,7 @@ def generate_all_thumbnails_gui():
     valleys = app.stream_analysis.valleys
     peaks = app.stream_analysis.peaks
     audio_y = app.stream_analysis.audio_y
-    title = app.stream_analysis.raw_title or video_path.stem
+    title = settings.get("ThumbnailTitle", app.stream_analysis.safe_title)
     if not valleys or not peaks or not audio_y:
         messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
         return
