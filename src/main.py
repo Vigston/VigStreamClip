@@ -231,7 +231,7 @@ class App:
             return path
 
         def segment_dir_path(self, title_name):
-            if title_name is "":
+            if title_name == "":
                 return
             
             path: Path = None
