@@ -47,8 +47,10 @@ BASE_DIR_PATH = get_base_dir()
 MODEL_DIR_PATH = BASE_DIR_PATH / "models"
 FONT_DIR_PATH = BASE_DIR_PATH / "fonts"
 ASSET_DIR_PATH = BASE_DIR_PATH / "assets"
-FFMPEG_DIR_PATH = BASE_DIR_PATH / "libs/ffmpeg-7.1.1-full_build/bin"
+LIB_DIR_PATH = BASE_DIR_PATH / "libs"
+FFMPEG_DIR_PATH = LIB_DIR_PATH / "ffmpeg-7.1.1-full_build" / "bin"
 FFMPEG_PATH = FFMPEG_DIR_PATH / "ffmpeg.exe"
+YTDLP_PATH = LIB_DIR_PATH / "yt-dlp.exe"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
@@ -706,7 +708,7 @@ def adjust_segment_ends(audio_file, segments, min_silence_len=1000, silence_thre
     # mp4→wav変換
     wav_file = str(Path(tempfile.gettempdir()) / "temp_clip.wav")
     subprocess.run([
-        "ffmpeg", "-y", "-i", audio_file,
+        str(FFMPEG_PATH), "-y", "-i", audio_file,
         "-ac", "1", "-ar", "16000",
         wav_file
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -958,7 +960,7 @@ def combine_video_with_danmaku_overlay(
     # frames_dir 内に danmaku_%04d.png
     frames_pattern = str(frames_dir / "danmaku_%04d.png")
     cmd = [
-        "ffmpeg", "-y",
+        str(FFMPEG_PATH), "-y",
         "-i", str(clip_path),
         "-framerate", str(fps),
         "-i", frames_pattern,
@@ -1003,7 +1005,7 @@ def generate_video(
         f"subtitles='{escape_ffmpeg_path(srt_path)}:force_style={style_str}'"
     )
     subprocess.run([
-        "ffmpeg", "-y",
+        str(FFMPEG_PATH), "-y",
         "-i", str(danmaku_video),
         "-filter_complex", filter_complex,
         "-c:v", "h264_nvenc",
@@ -1056,7 +1058,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
 
     # ① クリップ切り出し
     subprocess.run([
-        "ffmpeg", "-y",
+        str(FFMPEG_PATH), "-y",
         "-ss", str(clip.start_time),
         "-to", str(clip.end_time),
         "-i", str(video_path),
@@ -1632,7 +1634,7 @@ def convert_to_wav(input_file, wav_file):
         print(f"❌ 入力ファイルが存在しません: {input_file}")
         raise RuntimeError(f"入力ファイルが存在しません: {input_file}")
     cmd = [
-        "ffmpeg", "-y",
+        str(FFMPEG_PATH), "-y",
         "-i", str(input_file),
         "-ac", "1",
         "-ar", "44100",
@@ -1769,8 +1771,8 @@ def update_paths_from_url():
     normalized_url = normalize_youtube_url(url_input)
     app.stream_analysis.video_url = normalized_url
     result = subprocess.run([
-        "python", "-m", "yt_dlp", "--get-title", normalized_url
-    ], capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+        str(YTDLP_PATH), "--get-title", normalized_url
+    ], capture_output=True, text=True, encoding="utf-8", errors="replace")
     title = result.stdout.strip()
     if result.returncode != 0 or not title:
         messagebox.showerror("エラー", "動画タイトルが取得できませんでした")
@@ -1817,7 +1819,7 @@ def download_video():
     print("動画(1920x1080)ダウンロード中・・・")
     # 🔹 yt-dlpで 1920x1080 ダウンロード
     subprocess.run([
-        "yt-dlp",
+        str(YTDLP_PATH),
         "--force-overwrites",
         "-f", "137+140",
         "--merge-output-format", "mp4",
@@ -1837,7 +1839,7 @@ def download_video():
     )
     print(f"動画(1920x1080)を使って{resolution}に編集中・・・")
     subprocess.run([
-        "ffmpeg", "-y",
+        str(FFMPEG_PATH), "-y",
         "-i", str(base_output),
         "-vf", vf_filter,
         "-c:v", "h264_nvenc",
@@ -1982,7 +1984,7 @@ def generate_segments():
         duration = end - start
         segment_path = segment_dir_path / f"segment_{segment_count:02}.mp4"
         subprocess.run([
-            "ffmpeg", "-y",
+            str(FFMPEG_PATH), "-y",
             "-ss", str(timedelta(seconds=start)),
             "-i", video_file,
             "-t", str(timedelta(seconds=duration)),
@@ -2153,7 +2155,7 @@ def generate_all_thumbnails_gui():
         output_thumbnail = thumbnail_dir_path / (base_name + ".jpg")
         try:
             subprocess.run([
-                "ffmpeg", "-y",
+                str(FFMPEG_PATH), "-y",
                 "-ss", str(abs_max_sec),
                 "-i", str(video_path),
                 "-frames:v", "1",

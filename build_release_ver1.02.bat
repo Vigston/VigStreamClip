@@ -17,6 +17,17 @@ if not exist %DIST% (
     mkdir %DIST%
 )
 
+REM === yt-dlp.exe を Pythonの環境変数PATHから探してlibsにコピー ===
+for /f "delims=" %%i in ('python -c "import shutil; print(shutil.which(''yt-dlp''))"') do set YTDLP_PATH=%%i
+
+if not defined YTDLP_PATH (
+    echo [エラー] yt-dlp.exe が環境変数PATHから見つかりません
+    pause
+    exit /b
+)
+
+copy /Y "%YTDLP_PATH%" libs\
+
 REM PyInstaller で exe をビルド（--onedir）
 pyinstaller ^
   --name=%NAME% ^
