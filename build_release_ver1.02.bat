@@ -1,5 +1,11 @@
 @echo off
 chcp 65001 > nul
+
+REM === ビルド前にdist/build/__pycache__完全削除 ===
+rmdir /S /Q dist
+rmdir /S /Q build
+rmdir /S /Q __pycache__
+
 REM === VigStreamClip を build/release/VigStreamClip_ver1.02 にビルド ===
 
 echo pyinstaller最新版をインストールします...
@@ -17,16 +23,8 @@ if not exist %DIST% (
     mkdir %DIST%
 )
 
-REM === yt-dlp.exe を Pythonの環境変数PATHから探してlibsにコピー ===
-for /f "delims=" %%i in ('python -c "import shutil; print(shutil.which(''yt-dlp''))"') do set YTDLP_PATH=%%i
-
-if not defined YTDLP_PATH (
-    echo [エラー] yt-dlp.exe が環境変数PATHから見つかりません
-    pause
-    exit /b
-)
-
-copy /Y "%YTDLP_PATH%" libs\
+REM custom_formats.json の絶対パスをPythonで取得
+for /f "delims=" %%F in ('python -c "import chat_downloader.formatting, os; print(os.path.join(os.path.dirname(chat_downloader.formatting.__file__), 'custom_formats.json'))"') do set FORMATS_JSON=%%F
 
 REM PyInstaller で exe をビルド（--onedir）
 pyinstaller ^
@@ -38,6 +36,7 @@ pyinstaller ^
   --collect-data whisper ^
   --add-binary "libs/ffmpeg-7.1.1-full_build/bin/ffmpeg.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
   --add-binary "libs/ffmpeg-7.1.1-full_build/bin/ffprobe.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
+  --add-data "%FORMATS_JSON%;chat_downloader/formatting" ^
   "%SCRIPT%"
 
 REM リソースフォルダを出力先にコピー（上書きあり）

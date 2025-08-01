@@ -28,6 +28,7 @@ import tempfile
 import traceback
 import copy
 from shutil import which
+from chat_downloader import ChatDownloader
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -50,6 +51,7 @@ ASSET_DIR_PATH = BASE_DIR_PATH / "assets"
 LIB_DIR_PATH = BASE_DIR_PATH / "libs"
 FFMPEG_DIR_PATH = LIB_DIR_PATH / "ffmpeg-7.1.1-full_build" / "bin"
 FFMPEG_PATH = FFMPEG_DIR_PATH / "ffmpeg.exe"
+FFPROBE_PATH = FFMPEG_DIR_PATH / "ffprobe.exe"
 YTDLP_PATH = LIB_DIR_PATH / "yt-dlp.exe"
 MIN_DURATION = 60
 MAX_DURATION = 180
@@ -342,7 +344,7 @@ class App:
         self.label.pack()
         self.entry = tk.Entry(self.frame, width=70)
         self.entry.pack(pady=5)
-        tk.Button(self.frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat()).start()).pack(pady=5)
+        tk.Button(self.frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat).start()).pack(pady=5)
         tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video()).start()).pack(pady=5)
         tk.Button(self.frame, text="📊 分析してグラフを表示", command=lambda: analyze_and_plot()).pack(pady=5)
         tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments()).start()).pack(pady=5)
@@ -373,7 +375,7 @@ class App:
         setting_menu.add_separator()
         setting_menu.add_command(label="💾 設定を保存", command=lambda: (
             save_settings(),
-            messagebox.showinfo("保存完了", "現在の設定を保存しました。")
+            self.show_info_message("保存完了", "現在の設定を保存しました。")
         ))
 
         #####出力#####
@@ -426,6 +428,14 @@ class App:
         except Exception:
             pass
         print(msg, file=sys.__stderr__)  # ターミナルにも
+    
+    # GUIにメッセージボックスを表示
+    def show_info_message(self, title, message):
+        self.root.after(0, lambda: messagebox.showinfo(title, message))
+    
+    # GUIにエラーメッセージボックスを表示
+    def show_error_message(self, title, message):
+        self.root.after(0, lambda: messagebox.showerror(title, message))
 
 # クリップデータ
 @dataclass(slots=True)
@@ -799,7 +809,7 @@ def wrap_text_for_subtitles(text: str, max_width: int) -> str:
 # 動画解像度取得(reuturn str("{width}x{height})")
 def get_video_resolution(video_path: Path) -> str:
     result = subprocess.run([
-        "ffprobe", "-v", "error",
+        str(FFPROBE_PATH), "-v", "error",
         "-select_streams", "v:0",
         "-show_entries", "stream=width,height",
         "-of", "json", str(video_path)
@@ -1199,14 +1209,14 @@ def create_new_file():
     app.file_manager.create_file(name, project_settings)
     app.project_file_path_name = name
     app.update_window_title()
-    messagebox.showinfo("ファイル作成", f"新しいファイル「{name}」を作成しました。")
+    app.show_info_safe("ファイル作成", f"新しいファイル「{name}」を作成しました。")
     app.file_manager.load_file_settings(app.settings)
 
 def open_file():
     global app
     files = app.file_manager.list_files()
     if not files:
-        messagebox.showinfo("情報", "まだファイルがありません。新規ファイルを作成してください。")
+        app.show_info_message("情報", "まだファイルがありません。新規ファイルを作成してください。")
         return
     win = tk.Toplevel(app.root)
     win.title("ファイルを開く")
@@ -1225,14 +1235,14 @@ def open_file():
         app.update_window_title()
         app.file_manager.load_file_settings(app.settings)
         win.destroy()
-        messagebox.showinfo("ファイル切替", f"「{name}」を開きました。")
+        app.show_info_message("ファイル切替", f"「{name}」を開きました。")
     tk.Button(win, text="開く", command=do_select).pack()
 
 def delete_file():
     global app
     files = app.file_manager.list_files()
     if not files:
-        messagebox.showinfo("情報", "削除できるファイルがありません。")
+        app.show_info_message("情報", "削除できるファイルがありません。")
         return
     win = tk.Toplevel(app.root)
     win.title("ファイルを削除")
@@ -1249,7 +1259,7 @@ def delete_file():
         if messagebox.askyesno("確認", f"「{name}」を本当に削除しますか？"):
             app.file_manager.delete_file(name)
             win.destroy()
-            messagebox.showinfo("削除", f"「{name}」を削除しました。")
+            app.show_info_message("削除", f"「{name}」を削除しました。")
     tk.Button(win, text="削除", command=do_delete).pack()
 
 # 解像度設定メニュー表示
@@ -1275,10 +1285,10 @@ def open_resolution_window():
     def save_resolution():
         w, h = width_var.get().strip(), height_var.get().strip()
         if not w.isdigit() or not h.isdigit():
-            messagebox.showerror("エラー", "横幅・縦幅には数値を入力してください。")
+            app.show_error_message("エラー", "横幅・縦幅には数値を入力してください。")
             return
         settings["Resolution"] = f"{w}x{h}"
-        messagebox.showinfo("保存完了", f"解像度: {settings['Resolution']}")
+        app.show_info_message("保存完了", f"解像度: {settings['Resolution']}")
         save_settings() # 設定保存
         res_win.destroy()
 
@@ -1366,13 +1376,13 @@ def open_subtitle_style_window():
             val = var.get().strip()
             if key in ["FontSize", "Outline", "Shadow", "MarginV", "Alignment"]:
                 if not val.isdigit():
-                    messagebox.showerror("エラー", f"{key} は数値である必要があります。")
+                    app.show_error_message("エラー", f"{key} は数値である必要があります。")
                     return
                 settings[key] = int(val)
             else:
                 settings[key] = val
 
-        messagebox.showinfo("保存完了", "字幕スタイルが保存されました。")
+        app.show_info_message("保存完了", "字幕スタイルが保存されました。")
         save_settings() # 設定保存
         style_win.destroy()
 
@@ -1500,10 +1510,10 @@ def open_danmaku_style_window():
                 else:
                     settings[key] = val
             save_settings()
-            messagebox.showinfo("保存完了", "弾幕スタイルが保存されました。")
+            app.show_info_message("保存完了", "弾幕スタイルが保存されました。")
             win.destroy()
         except Exception as e:
-            messagebox.showerror("エラー", f"保存中にエラーが発生しました: {e}")
+            app.show_error_message("エラー", f"保存中にエラーが発生しました: {e}")
 
     Button(win, text="保存", command=save_danmaku_style).pack(pady=10)
 
@@ -1539,10 +1549,10 @@ def open_clip_setting_window():
                 else:
                     settings[key] = float(value)
             save_settings()
-            messagebox.showinfo("保存完了", "クリップ設定を保存しました。")
+            app.show_info_message("保存完了", "クリップ設定を保存しました。")
             win.destroy()
         except Exception as e:
-            messagebox.showerror("エラー", f"保存に失敗しました: {e}")
+            app.show_error_message("エラー", f"保存に失敗しました: {e}")
 
     Button(win, text="保存", command=save_clip_settings).pack(pady=10)
 
@@ -1584,9 +1594,9 @@ def clip_reburn_gui():
             srt_path=Path(srt_path),
             output_path=out
         )
-        messagebox.showinfo("完了", f"字幕＋弾幕の焼き直しが完了しました！\n出力: {out.name}")
+        app.show_info_message("完了", f"字幕＋弾幕の焼き直しが完了しました！\n出力: {out.name}")
     except Exception as e:
-        messagebox.showerror("エラー", f"字幕＋弾幕焼き直しに失敗しました:\n{e}")
+        app.show_error_message("エラー", f"字幕＋弾幕焼き直しに失敗しました:\n{e}")
 
 # 字幕生成のフィルター設定を生成
 def generate_subtitle_filter(srt_path: Path) -> str:
@@ -1678,7 +1688,7 @@ def generate_clips_from_folder():
             print(f"📁 フォルダ選択でクリップ動画の生成を開始します・・・: {segment_dir_path}")
             for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
                 generate_clips(segment_file_path)
-            app.root.after(0, lambda: messagebox.showinfo("完了", "フォルダ指定のクリップ動画生成が完了しました"))
+            app.show_info_message("完了", "フォルダ指定のクリップ動画生成が完了しました")
     
         threading.Thread(target=run).start()
 
@@ -1698,7 +1708,7 @@ def generate_clips_from_file():
     def run():
         print(f"🎬 ファイル選択でクリップ動画の生成を開始します・・・: {segment_file_path}")
         generate_clips(Path(segment_file_path))
-        app.root.after(0, lambda: messagebox.showinfo("完了", "ファイル指定のクリップ動画生成が完了しました"))
+        app.show_info_message("完了", "ファイル指定のクリップ動画生成が完了しました")
     threading.Thread(target=run).start()
     
 def generate_clips(segment_path: Path):
@@ -1775,7 +1785,7 @@ def update_paths_from_url():
     ], capture_output=True, text=True, encoding="utf-8", errors="replace")
     title = result.stdout.strip()
     if result.returncode != 0 or not title:
-        messagebox.showerror("エラー", "動画タイトルが取得できませんでした")
+        app.show_error_message("エラー", "動画タイトルが取得できませんでした")
         return False
     app.stream_analysis.raw_title = title
     app.stream_analysis.safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
@@ -1791,16 +1801,24 @@ def download_chat():
     if not update_paths_from_url():
         return
     if os.path.exists(app.stream_analysis.chat_file):
-        messagebox.showinfo("情報", "チャットファイルは既に存在します。")
+        app.show_info_message("情報", "チャットファイルは既に存在します。")
         return
     
     print("チャットデータダウンロード開始・・・", flush=True)
-    subprocess.run([
-        "python", "-m", "chat_downloader", app.stream_analysis.video_url,
-        "--output", app.stream_analysis.chat_file
-    ])
+    try:
+        chat = ChatDownloader().get_chat(app.stream_analysis.video_url)
+        data = []
+        for i, message in enumerate(chat, start=1):
+            data.append(message)
+            #if i % 100 == 0:
+                #print(f"取得中... {i}件")
+        with open(app.stream_analysis.chat_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print("✅ チャット保存完了")
+    except Exception as e:
+        print(f"❌ エラー: {e}")
     print("チャットデータダウンロード終了")
-    messagebox.showinfo("完了", "チャットダウンロード完了！")
+    app.show_info_message("完了", "チャットダウンロード完了！")
 
 def download_video():
     global app
@@ -1830,7 +1848,7 @@ def download_video():
     # 🔹 ユーザー指定が1920x1080なら変換不要
     if resolution == "1920x1080":
         app.stream_analysis.video_file = str(base_output)
-        messagebox.showinfo("完了", f"動画取得完了: {base_output.name}")
+        app.show_info_message("完了", f"動画取得完了: {base_output.name}")
         return
     # 🔹 アスペクト比維持＋黒帯で中央寄せ
     vf_filter = (
@@ -1849,7 +1867,7 @@ def download_video():
     print(f"動画({resolution})編集終了")
     print(f"✅ {resolution} 動画をダウンロード完了: {base_output.name}")
     app.stream_analysis.video_file = str(final_output)
-    messagebox.showinfo("完了", f"動画取得完了: {final_output.name}")
+    app.show_info_message("完了", f"動画取得完了: {final_output.name}")
 
 def analyze_and_plot() -> threading.Thread:
     global app
@@ -2003,7 +2021,7 @@ def generate_segments():
         json.dump(segment_meta, f, ensure_ascii=False, indent=2)
     
     print("セグメント生成終了・・・")
-    messagebox.showinfo("完了", f"セグメント生成が完了しました！\n保存先: {segment_dir_path}")
+    app.show_info_message("完了", f"セグメント生成が完了しました！\n保存先: {segment_dir_path}")
     
 def extract_valley_peak_pairs(valleys, peaks):
     # 時間順に並んだ山谷をまとめる
@@ -2132,7 +2150,7 @@ def generate_all_thumbnails_gui():
     audio_y = app.stream_analysis.audio_y
     title = settings.get("ThumbnailTitle", app.stream_analysis.safe_title)
     if not valleys or not peaks or not audio_y:
-        messagebox.showerror("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
+        app.show_error_message("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
         return
     # output/thumbnail フォルダ作成
     thumbnail_dir_path = output_dir_path / "thumbnail"
@@ -2190,7 +2208,7 @@ def generate_all_thumbnails_gui():
             print(f"✅ サムネイル生成: {output_thumbnail}")
         except Exception as e:
             print(f"❌ サムネイル生成失敗: segment{idx} {e}")
-    messagebox.showinfo("完了", f"すべてのサムネイル画像を\noutput/thumbnail/\nに保存しました。")
+    app.show_info_message("完了", f"すべてのサムネイル画像を\noutput/thumbnail/\nに保存しました。")
 
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
