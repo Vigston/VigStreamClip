@@ -1209,7 +1209,7 @@ def create_new_file():
     app.file_manager.create_file(name, project_settings)
     app.project_file_path_name = name
     app.update_window_title()
-    app.show_info_safe("ファイル作成", f"新しいファイル「{name}」を作成しました。")
+    app.show_info_message("ファイル作成", f"新しいファイル「{name}」を作成しました。")
     app.file_manager.load_file_settings(app.settings)
 
 def open_file():
@@ -1785,6 +1785,7 @@ def update_paths_from_url():
     ], capture_output=True, text=True, encoding="utf-8", errors="replace")
     title = result.stdout.strip()
     if result.returncode != 0 or not title:
+        print(f"❌ yt-dlp失敗: {result.stderr}")  # ★ここでエラー内容を表示
         app.show_error_message("エラー", "動画タイトルが取得できませんでした")
         return False
     app.stream_analysis.raw_title = title
