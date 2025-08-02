@@ -1780,13 +1780,29 @@ def update_paths_from_url():
         return False
     normalized_url = normalize_youtube_url(url_input)
     app.stream_analysis.video_url = normalized_url
-    result = subprocess.run([
-        str(YTDLP_PATH), "--get-title", normalized_url
-    ], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    title = result.stdout.strip()
-    if result.returncode != 0 or not title:
-        print(f"❌ yt-dlp失敗: {result.stderr}")  # ★ここでエラー内容を表示
-        app.show_error_message("エラー", "動画タイトルが取得できませんでした")
+    try:
+        result = subprocess.run(
+            [str(YTDLP_PATH), "--get-title", normalized_url],
+            capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        title = result.stdout.strip()
+        if result.returncode != 0 or not title:
+            print("returncode:", result.returncode)
+            print("stdout:", result.stdout)
+            print("stderr:", result.stderr)
+            print("args:", result.args)
+            print("YTDLP_PATH exists:", os.path.exists(str(YTDLP_PATH)))
+            print(f"❌ yt-dlp失敗: {result.stderr}")
+            app.show_error_message("エラー", "動画タイトルが取得できませんでした")
+            return False
+    except FileNotFoundError as e:
+        print("yt-dlpが見つかりません:", e)
+    except PermissionError as e:
+        print("yt-dlpの実行権限がありません:", e)
+    except Exception as e:
+        print("yt-dlp実行中に想定外のエラー:", e)
+        traceback.print_exc()  # ← これでエラー詳細を標準出力に表示
+        app.show_error_message("エラー", f"yt-dlp実行中に例外が発生しました:\n{e}")
         return False
     app.stream_analysis.raw_title = title
     app.stream_analysis.safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
