@@ -34,8 +34,8 @@ pyinstaller ^
   --workpath %BUILD% ^
   --clean ^
   --collect-data whisper ^
-  --add-binary "libs/ffmpeg-7.1.1-full_build/bin/ffmpeg.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
-  --add-binary "libs/ffmpeg-7.1.1-full_build/bin/ffprobe.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
+  --add-binary "libs/ffmpeg.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
+  --add-binary "libs/ffprobe.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
   --add-data "%FORMATS_JSON%;chat_downloader/formatting" ^
   "%SCRIPT%"
 

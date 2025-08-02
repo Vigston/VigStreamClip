@@ -49,15 +49,14 @@ MODEL_DIR_PATH = BASE_DIR_PATH / "models"
 FONT_DIR_PATH = BASE_DIR_PATH / "fonts"
 ASSET_DIR_PATH = BASE_DIR_PATH / "assets"
 LIB_DIR_PATH = BASE_DIR_PATH / "libs"
-FFMPEG_DIR_PATH = LIB_DIR_PATH / "ffmpeg-7.1.1-full_build" / "bin"
-FFMPEG_PATH = FFMPEG_DIR_PATH / "ffmpeg.exe"
-FFPROBE_PATH = FFMPEG_DIR_PATH / "ffprobe.exe"
+FFMPEG_PATH = LIB_DIR_PATH / "ffmpeg.exe"
+FFPROBE_PATH = LIB_DIR_PATH / "ffprobe.exe"
 YTDLP_PATH = LIB_DIR_PATH / "yt-dlp.exe"
 MIN_DURATION = 60
 MAX_DURATION = 180
 
 # ffmpeg/ffprobe の実行パスを追加
-os.environ["PATH"] = str(FFMPEG_DIR_PATH) + os.pathsep + os.environ.get("PATH", "")
+os.environ["PATH"] = str(LIB_DIR_PATH) + os.pathsep + os.environ.get("PATH", "")
 # pydubにffmpeg.exeの実行パスを追加
 from pydub import AudioSegment, silence, utils
 AudioSegment.converter = str(FFMPEG_PATH)
@@ -1782,7 +1781,10 @@ def update_paths_from_url():
     app.stream_analysis.video_url = normalized_url
     try:
         result = subprocess.run(
-            [str(YTDLP_PATH), "--get-title", normalized_url],
+            [
+                str(YTDLP_PATH),
+                "--ffmpeg-location", str(LIB_DIR_PATH),
+                "--get-title", normalized_url],
             capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         title = result.stdout.strip()
