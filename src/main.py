@@ -47,8 +47,8 @@ plt.rcParams["font.family"] = "Noto Sans JP"
 BASE_DIR_PATH = get_base_dir()
 MODEL_DIR_PATH = BASE_DIR_PATH / "models"
 FONT_DIR_PATH = BASE_DIR_PATH / "fonts"
-ASSET_DIR_PATH = BASE_DIR_PATH / "assets"
 LIB_DIR_PATH = BASE_DIR_PATH / "libs"
+RES_DIR_PATH = BASE_DIR_PATH / "res"
 FFMPEG_PATH = LIB_DIR_PATH / "ffmpeg.exe"
 FFPROBE_PATH = LIB_DIR_PATH / "ffprobe.exe"
 YTDLP_PATH = LIB_DIR_PATH / "yt-dlp.exe"
@@ -533,7 +533,7 @@ COLOR_MAP = {
 
 # ChatGptのAPIキーを読み込み
 def load_api_key_from_file() -> str:
-    key_path =  ASSET_DIR_PATH / "sec" / "openai_key.txt"
+    key_path =  RES_DIR_PATH / "openai_key.txt"
     with open(key_path, "r", encoding="utf-8") as f:
         return f.readline().strip()
 
@@ -1785,7 +1785,7 @@ def update_paths_from_url():
                 str(YTDLP_PATH),
                 "--ffmpeg-location", str(LIB_DIR_PATH),
                 "--get-title", normalized_url],
-            capture_output=True, text=True, encoding="utf-8", errors="replace"
+            capture_output=True, text=True, encoding="cp932", errors="replace"
         )
         title = result.stdout.strip()
         if result.returncode != 0 or not title:
@@ -1858,7 +1858,7 @@ def download_video():
     subprocess.run([
         str(YTDLP_PATH),
         "--force-overwrites",
-        "-f", "137+140",
+        "-f", "bestvideo+bestaudio",
         "--merge-output-format", "mp4",
         "-o", str(base_output),
         app.stream_analysis.video_url

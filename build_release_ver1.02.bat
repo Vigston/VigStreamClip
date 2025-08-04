@@ -34,19 +34,19 @@ pyinstaller ^
   --workpath %BUILD% ^
   --clean ^
   --collect-data whisper ^
-  --add-binary "libs/ffmpeg.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
-  --add-binary "libs/ffprobe.exe;libs/ffmpeg-7.1.1-full_build/bin" ^
+  --add-binary "libs/ffmpeg.exe;libs" ^
+  --add-binary "libs/ffprobe.exe;libs" ^
   --add-data "%FORMATS_JSON%;chat_downloader/formatting" ^
   "%SCRIPT%"
 
 REM リソースフォルダを出力先にコピー（上書きあり）
-xcopy /E /I /Y assets %DIST%\assets
 xcopy /E /I /Y fonts %DIST%\fonts
 xcopy /E /I /Y models %DIST%\models
 xcopy /E /I /Y libs %DIST%\libs
+xcopy /E /I /Y res %DIST%\res
 
 REM openai_key.txt を空で出力先に作成
-echo. > %DIST%\assets\sec\openai_key.txt
+echo. > %DIST%\res\openai_key.txt
 
 echo.
 echo ✅ ビルド完了！出力: %DIST%\%NAME%\%NAME%.exe
