@@ -380,7 +380,8 @@ class App:
         #####出力#####
         output_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="出力", menu=output_menu)
-        output_menu.add_command(label="クリップ焼き直し", command=lambda: threading.Thread(target=clip_reburn_gui).start())
+        output_menu.add_command(label="クリップ焼き直し(ファイル)", command=lambda: threading.Thread(target=clip_reburn_file_gui).start())
+        output_menu.add_command(label="クリップ焼き直し(フォルダ)", command=lambda: threading.Thread(target=clip_reburn_folder_gui).start())
     
     def setup_logging_area(self):
         # ログ用ウィジェット作成
@@ -461,7 +462,7 @@ class StreamAnalysis:
 # 設定データ
 settings = {
     # 解像度などの一般設定
-    "Resolution": "1920x1080",
+    "Resolution": "1080x1920",
     
     # 字幕スタイル
     "Font": "Noto Sans JP",
@@ -496,8 +497,8 @@ settings = {
     "DanmakuSpeed": 1.0,              # スクロール速度係数
     
     # Clip関連（クリップ長・無音閾値）
-    "MinClipLength": 60,
-    "MaxClipLength": 180,
+    "MinClipLength": 30,
+    "MaxClipLength": 60,
     "SilenceGap": 1.0,
 }
 
@@ -1556,7 +1557,7 @@ def open_clip_setting_window():
     Button(win, text="保存", command=save_clip_settings).pack(pady=10)
 
 # 字幕の焼き直し
-def clip_reburn_gui():
+def clip_reburn_file_gui():
     # 元MP4
     mp4_path = filedialog.askopenfilename(
         title="焼き直すMP4ファイルを選択",
@@ -1585,17 +1586,58 @@ def clip_reburn_gui():
         return
 
     # 出力名決定
-    out = Path(mp4_path).with_name(Path(mp4_path).stem + "_subtitled_danmaku.mp4")
+    #out = Path(mp4_path).with_name(Path(mp4_path).stem + "_subtitled_danmaku.mp4")
 
     try:
         generate_video(
             danmaku_video=Path(danmaku_path),
             srt_path=Path(srt_path),
-            output_path=out
+            output_path=Path(mp4_path)
         )
-        app.show_info_message("完了", f"字幕＋弾幕の焼き直しが完了しました！\n出力: {out.name}")
+        app.show_info_message("完了", f"字幕＋弾幕の焼き直しが完了しました！\n出力: {mp4_path}")
     except Exception as e:
         app.show_error_message("エラー", f"字幕＋弾幕焼き直しに失敗しました:\n{e}")
+
+def clip_reburn_folder_gui():
+    # ① clipフォルダ選択
+    folder = filedialog.askdirectory(title="クリップの焼き直しを行うフォルダを選択")
+    if not folder:
+        print("❌ フォルダが選択されませんでした")
+        return
+
+    folder = Path(folder)
+    # ② クリップごとに処理
+    count = 0
+    for clip_dir in folder.glob("clip_*"):
+        if not clip_dir.is_dir():
+            continue
+        # クリップmp4/srt/弾幕動画パス探索
+        mp4s = list(clip_dir.glob("*.mp4"))
+        srts = list(clip_dir.glob("*.srt")) + list(clip_dir.glob("*.ass"))
+        danmaku_mp4s = [p for p in mp4s if "danmaku" in p.stem]
+        base_mp4s = [p for p in mp4s if "final" not in p.stem and "danmaku" not in p.stem]
+        # 最終出力ファイル名
+        for base_mp4 in base_mp4s:
+            stem = base_mp4.stem
+            # 対応するsrt/ass, danmaku.mp4
+            srt = next((s for s in srts if stem in s.stem), None)
+            danmaku = next((d for d in danmaku_mp4s if stem in d.stem), None)
+            if not srt or not danmaku:
+                print(f"⚠️ {clip_dir.name} の素材が揃っていません: {base_mp4.name}")
+                continue
+            out_path = clip_dir / f"{stem}_reburned.mp4"
+            try:
+                generate_video(
+                    danmaku_video=danmaku,
+                    srt_path=srt,
+                    output_path=out_path
+                )
+                print(f"✅ クリップ焼き直し完了: {out_path}")
+                count += 1
+            except Exception as e:
+                print(f"❌ {clip_dir.name} 焼き直し失敗: {e}")
+
+    app.show_info_message("完了", f"{count}個のクリップ焼き直しが完了しました！")
 
 # 字幕生成のフィルター設定を生成
 def generate_subtitle_filter(srt_path: Path) -> str:
@@ -1779,19 +1821,13 @@ def update_paths_from_url():
         return False
     normalized_url = normalize_youtube_url(url_input)
     app.stream_analysis.video_url = normalized_url
-    if getattr(sys, 'frozen', False):
-        # exe（PyInstaller等でビルドされた実行ファイル）
-        ENCODING = "cp932"
-    else:
-        # 開発環境（VSCode等）
-        ENCODING = "utf-8"
     try:
         result = subprocess.run(
             [
                 str(YTDLP_PATH),
                 "--ffmpeg-location", str(LIB_DIR_PATH),
                 "--get-title", normalized_url],
-            capture_output=True, text=True, encoding=ENCODING, errors="replace"
+            capture_output=True, text=True, encoding="cp932", errors="replace"
         )
         title = result.stdout.strip()
         if result.returncode != 0 or not title:
