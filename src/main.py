@@ -1779,13 +1779,19 @@ def update_paths_from_url():
         return False
     normalized_url = normalize_youtube_url(url_input)
     app.stream_analysis.video_url = normalized_url
+    if getattr(sys, 'frozen', False):
+        # exe（PyInstaller等でビルドされた実行ファイル）
+        ENCODING = "cp932"
+    else:
+        # 開発環境（VSCode等）
+        ENCODING = "utf-8"
     try:
         result = subprocess.run(
             [
                 str(YTDLP_PATH),
                 "--ffmpeg-location", str(LIB_DIR_PATH),
                 "--get-title", normalized_url],
-            capture_output=True, text=True, encoding="cp932", errors="replace"
+            capture_output=True, text=True, encoding=ENCODING, errors="replace"
         )
         title = result.stdout.strip()
         if result.returncode != 0 or not title:
@@ -1858,7 +1864,7 @@ def download_video():
     subprocess.run([
         str(YTDLP_PATH),
         "--force-overwrites",
-        "-f", "bestvideo+bestaudio",
+        "-f", "299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
         "--merge-output-format", "mp4",
         "-o", str(base_output),
         app.stream_analysis.video_url
