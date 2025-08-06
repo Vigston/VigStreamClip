@@ -1271,7 +1271,7 @@ def open_resolution_window():
     res_win.geometry("300x120")
 
     tk.Label(res_win, text="解像度を設定:").pack(pady=5)
-    current_res = settings.get("Resolution", "1920x1080")
+    current_res = settings.get("Resolution", "1080x1920")
     default_width, default_height = current_res.lower().split("x")
 
     entry_frame = tk.Frame(res_win)
@@ -1789,8 +1789,8 @@ def generate_clips(segment_path: Path):
         print(f"📝 字幕セグメント数: {len(segments)}")
         clips = group_segments_by_duration(
             segments,
-            settings.get("MinClipLength", 60),
-            settings.get("MaxClipLength", 180),
+            settings.get("MinClipLength", 30),
+            settings.get("MaxClipLength", 60),
             settings.get("SilenceGap", 1.0)
         )
         print(f"📌 抽出されたクリップ数: {len(clips)}")
@@ -1890,7 +1890,7 @@ def download_video():
     save_dir = app.file_manager.output_dir_path(base_name)
     print("動画ダウンロード開始・・・")
     # 🔸 ユーザー設定解像度
-    resolution = settings.get("Resolution", "1920x1080")
+    resolution = settings.get("Resolution", "1080x1920")
     target_width, target_height = map(int, resolution.lower().split("x"))
     # 🔸 保存ファイル名（元タイトルベース）
     base_output = save_dir / f"{base_name}_1920x1080.mp4"
