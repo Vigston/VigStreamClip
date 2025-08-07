@@ -1586,13 +1586,13 @@ def clip_reburn_file_gui():
         return
 
     # 出力名決定
-    #out = Path(mp4_path).with_name(Path(mp4_path).stem + "_subtitled_danmaku.mp4")
+    out = Path(mp4_path).with_name(Path(mp4_path).stem + "_final.mp4")
 
     try:
         generate_video(
             danmaku_video=Path(danmaku_path),
             srt_path=Path(srt_path),
-            output_path=Path(mp4_path)
+            output_path=Path(out)
         )
         app.show_info_message("完了", f"字幕＋弾幕の焼き直しが完了しました！\n出力: {mp4_path}")
     except Exception as e:
@@ -1625,7 +1625,7 @@ def clip_reburn_folder_gui():
             if not srt or not danmaku:
                 print(f"⚠️ {clip_dir.name} の素材が揃っていません: {base_mp4.name}")
                 continue
-            out_path = clip_dir / f"{stem}_reburned.mp4"
+            out_path = clip_dir / f"{stem}_final.mp4"
             try:
                 generate_video(
                     danmaku_video=danmaku,
@@ -1849,7 +1849,12 @@ def update_paths_from_url():
         app.show_error_message("エラー", f"yt-dlp実行中に例外が発生しました:\n{e}")
         return False
     app.stream_analysis.raw_title = title
-    app.stream_analysis.safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
+    #####パス指定でエラーを引き起こす文字は_に変換して使う#####
+    # 三点リーダーをアンダースコアに変換
+    title = title.replace("…", "_")
+    # 記号をアンダースコアに変換
+    app.stream_analysis.safe_title = re.sub(r'[\\/*?:"\'<>|]', "", title)
+    print(f"safe_title: {app.stream_analysis.safe_title}")
     output_dir = app.file_manager.output_dir_path(app.stream_analysis.safe_title)
     output_dir.mkdir(parents=True, exist_ok=True)
     app.stream_analysis.chat_file = str(output_dir / f"{app.stream_analysis.safe_title}_chat.json")
