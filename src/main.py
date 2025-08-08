@@ -1853,7 +1853,7 @@ def update_paths_from_url():
     # 三点リーダーをアンダースコアに変換
     title = title.replace("…", "_")
     # 記号をアンダースコアに変換
-    app.stream_analysis.safe_title = re.sub(r'[\\/*?:"\'<>|]', "", title)
+    app.stream_analysis.safe_title = re.sub(r'[\\/*?:"\'<>|#]', "", title)
     print(f"safe_title: {app.stream_analysis.safe_title}")
     output_dir = app.file_manager.output_dir_path(app.stream_analysis.safe_title)
     output_dir.mkdir(parents=True, exist_ok=True)
