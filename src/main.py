@@ -1469,7 +1469,7 @@ def open_danmaku_style_window():
         frame.pack(pady=4, anchor=W)
         Label(frame, text=label, width=18, anchor=W).pack(side=LEFT)
         val = settings.get(key)
-        var = StringVar(value=str(val)) if var_type is str else StringVar(value=str(int(val)))
+        var = StringVar(value=str(val))
         entry = Entry(frame, textvariable=var, width=20)
         entry.pack(side=LEFT)
         entries[key] = (var, var_type)
