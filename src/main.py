@@ -382,6 +382,12 @@ class App:
         self.menubar.add_cascade(label="出力", menu=output_menu)
         output_menu.add_command(label="クリップ焼き直し(ファイル)", command=lambda: threading.Thread(target=clip_reburn_file_gui).start())
         output_menu.add_command(label="クリップ焼き直し(フォルダ)", command=lambda: threading.Thread(target=clip_reburn_folder_gui).start())
+        
+        #####出力#####
+        preview_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="プレビュー", menu=preview_menu)
+        preview_menu.add_command(label="色コード", command=lambda: open_color_code_preview())
+        
     
     def setup_logging_area(self):
         # ログ用ウィジェット作成
@@ -468,9 +474,9 @@ settings = {
     "Font": "Noto Sans JP",
     "FontSize": 24,
     "Outline": 2,
-    "OutlineColor": "&H00000000",
+    "OutlineColor": "FFFFFFFF",
     "Shadow": 1,
-    "PrimaryColor": "&H00FFFFFF",
+    "PrimaryColor": "FF000000",
     "MarginV": 40,
     "Alignment": 2,
     
@@ -489,9 +495,9 @@ settings = {
     "DanmakuEnabled": True,
     "DanmakuFont": "Noto Sans JP",
     "DanmakuFontSize": 36,
-    "DanmakuColor": "#FFFFFFFF",
+    "DanmakuColor": "FF000000",
     "DanmakuShadow": True,
-    "DanmakuShadowColor": "#000000",  # 影の色
+    "DanmakuShadowColor": "FFBFBCB8",  # 影の色
     "DanmakuTrackCount": 12,
     "DanmakuDuration": 3.0,
     "DanmakuSpeed": 1.0,              # スクロール速度係数
@@ -920,9 +926,9 @@ def generate_comment_to_png_sequence(
 
     # スタイル設定の読み込み
     font_size = settings.get("DanmakuFontSize", 36)
-    color_str = settings.get("DanmakuColor", "#FFFFFF")
+    color_str = aarrggbb_to_rgba(settings.get("DanmakuColor", "FF000000"))
     show_shadow = settings.get("DanmakuShadow", True)
-    shadow_color = settings.get("DanmakuShadowColor", "#000000")
+    shadow_color = aarrggbb_to_rgba(settings.get("DanmakuShadowColor", "FFBFBCB8"))
     track_count = settings.get("DanmakuTrackCount", 12)
     duration = duration_per_comment or settings.get("DanmakuDuration", 3.0)
     speed_factor = settings.get("DanmakuSpeed", 1.0)
@@ -997,18 +1003,19 @@ def generate_video(
     style_str: str = None
 ):
     if not style_str:
-        s = settings
-        font_name = s["Font"]
+        font_name = settings["Font"]
         style_str = (
             f"FontName={escape_font_name(font_name)},"
-            f"FontSize={s['FontSize']},"
-            f"PrimaryColor={s['PrimaryColor']},"
-            f"Outline={s['Outline']},"
-            f"OutlineColor={s['OutlineColor']},"
-            f"Shadow={s['Shadow']},"
-            f"MarginV={s['MarginV']},"
-            f"Alignment={s['Alignment']}"
+            f"FontSize={settings['FontSize']},"
+            f"PrimaryColor={aarrggbb_to_ass_code(settings['PrimaryColor'])},"
+            f"Outline={settings['Outline']},"
+            f"OutlineColor={aarrggbb_to_ass_code(settings['OutlineColor'])},"
+            f"Shadow={settings['Shadow']},"
+            f"MarginV={settings['MarginV']},"
+            f"Alignment={settings['Alignment']}"
         )
+    
+    print(f"generate_video::style_str={style_str}")
 
     # 弾幕動画に直接字幕を合成
     filter_complex = (
@@ -1639,19 +1646,106 @@ def clip_reburn_folder_gui():
 
     app.show_info_message("完了", f"{count}個のクリップ焼き直しが完了しました！")
 
+#####色コード変換#####
+def aarrggbb_to_rgba(color: str):
+    s = color.lstrip("#")
+    if len(s) != 8:
+        return (0,0,0,255)
+    a = int(s[0:2], 16)
+    r = int(s[2:4], 16)
+    g = int(s[4:6], 16)
+    b = int(s[6:8], 16)
+    return (r, g, b, a)
+
+def aarrggbb_to_ass_code(color: str) -> str:
+    c = color.lstrip("#")
+    if len(c) != 8:
+        raise ValueError("AARRGGBB形式のみを受け付けます")
+    aa, rr, gg, bb = c[0:2], c[2:4], c[4:6], c[6:8]
+    return f"&H{aa}{bb}{gg}{rr}"
+    
+def rgba_to_aarrggbb(r, g, b, a):
+    return f"{a:02X}{r:02X}{g:02X}{b:02X}"
+
+def open_color_code_preview():
+    dlg = Toplevel()
+    dlg.title("色コード生成ウィンドウ（AARRGGBB）")
+    dlg.geometry("340x500")
+
+    a, r, g, b = 255, 255, 0, 0
+
+    r_scale = Scale(dlg, from_=0, to=255, orient=HORIZONTAL, label="R")
+    r_scale.set(r)
+    g_scale = Scale(dlg, from_=0, to=255, orient=HORIZONTAL, label="G")
+    g_scale.set(g)
+    b_scale = Scale(dlg, from_=0, to=255, orient=HORIZONTAL, label="B")
+    b_scale.set(b)
+    a_scale = Scale(dlg, from_=0, to=255, orient=HORIZONTAL, label="A(透明度)")
+    a_scale.set(a)
+
+    r_scale.pack()
+    g_scale.pack()
+    b_scale.pack()
+    a_scale.pack()
+
+    # キャンバスで色＋Color文字を重ねる
+    canvas = Canvas(dlg, width=160, height=48, bg="#FFF", highlightthickness=0)
+    canvas.pack(pady=14)
+
+    code_label = Label(dlg, text="", font=("Consolas", 14), fg="#000000")
+    code_label.pack()
+
+    def update_preview(*_):
+        aa = a_scale.get()
+        rr = r_scale.get()
+        gg = g_scale.get()
+        bb = b_scale.get()
+        hexval = rgba_to_aarrggbb(rr, gg, bb, aa)
+        code_label["text"] = f"AARRGGBB: {hexval}"
+
+        # 背景色（アルファなしの見た目色で塗る）
+        canvas.delete("all")
+        # Checker-board pattern to visualize alpha (optional, but helpful)
+        for y in range(0, 48, 8):
+            for x in range(0, 160, 8):
+                if (x//8 + y//8) % 2 == 0:
+                    canvas.create_rectangle(x, y, x+8, y+8, fill="#ccc", outline="")
+                else:
+                    canvas.create_rectangle(x, y, x+8, y+8, fill="#fff", outline="")
+        # 透明度を考慮した色（Tkinterはアルファ不可なので、重ねて近い見た目にする）
+        bg_hex = f'#{rr:02x}{gg:02x}{bb:02x}'
+        alpha = aa / 255
+        # 疑似的に不透明度を再現（色を透明度に応じて白と合成）
+        def blend(bg, fg, alpha):
+            return int(fg*alpha + bg*(1-alpha))
+        r_disp = blend(255, rr, alpha)
+        g_disp = blend(255, gg, alpha)
+        b_disp = blend(255, bb, alpha)
+        disp_color = f'#{r_disp:02x}{g_disp:02x}{b_disp:02x}'
+        canvas.create_rectangle(0, 0, 160, 48, fill=disp_color, outline="")
+
+    for scale in (r_scale, g_scale, b_scale, a_scale):
+        scale.config(command=lambda *_: update_preview())
+    update_preview()
+
+    def copy_to_clipboard():
+        dlg.clipboard_clear()
+        dlg.clipboard_append(code_label["text"].split()[-1])
+
+    Button(dlg, text="色コードをコピー", command=copy_to_clipboard).pack(pady=8)
+
 # 字幕生成のフィルター設定を生成
 def generate_subtitle_filter(srt_path: Path) -> str:
-    s = settings
-    font_name = s["Font"]
+    font_name = settings["Font"]
     style_str = (
         f"FontName={escape_font_name(font_name)},"
-        f"FontSize={s['FontSize']},"
-        f"PrimaryColor={s['PrimaryColor']},"
-        f"Outline={s['Outline']},"
-        f"OutlineColor={s['OutlineColor']},"
-        f"Shadow={s['Shadow']},"
-        f"MarginV={s['MarginV']},"
-        f"Alignment={s['Alignment']}"
+        f"FontSize={settings['FontSize']},"
+        f"PrimaryColor={aarrggbb_to_ass_code(settings['PrimaryColor'])},"
+        f"Outline={settings['Outline']},"
+        f"OutlineColor={aarrggbb_to_ass_code(settings['OutlineColor'])},"
+        f"Shadow={settings['Shadow']},"
+        f"MarginV={settings['MarginV']},"
+        f"Alignment={settings['Alignment']}"
     )
     
     srt_path_escaped = escape_ffmpeg_path(srt_path)
