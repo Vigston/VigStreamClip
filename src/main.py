@@ -344,12 +344,12 @@ class App:
         self.entry = tk.Entry(self.frame, width=70)
         self.entry.pack(pady=5)
         tk.Button(self.frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video()).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video).start()).pack(pady=5)
         tk.Button(self.frame, text="📊 分析してグラフを表示", command=lambda: analyze_and_plot()).pack(pady=5)
-        tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments()).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder()).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file()).start()).pack(pady=5)
-        tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui()).start()).pack(pady=5)
+        tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder).start()).pack(pady=5)
+        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file).start()).pack(pady=5)
+        tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5)
     
     def setup_menu(self):
         self.menubar = tk.Menu(self.root)
@@ -468,44 +468,44 @@ class StreamAnalysis:
 # 設定データ
 settings = {
     # 解像度などの一般設定
-    "Resolution": "1080x1920",
-    
+    "Resolution": "1080x1920",            # 出力動画の解像度（横x縦）
+
     # 字幕スタイル
-    "Font": "Noto Sans JP",
-    "FontSize": 24,
-    "Outline": 2,
-    "OutlineColor": "FFFFFFFF",
-    "Shadow": 1,
-    "PrimaryColor": "FF000000",
-    "MarginV": 40,
-    "Alignment": 2,
-    
+    "Font": "Noto Sans JP",               # 字幕に使用するフォント名
+    "FontSize": 24,                       # 字幕のフォントサイズ（pt）
+    "PrimaryColour": "FF000000",          # 字幕文字色（AARRGGBB形式）
+    "Outline": 0.8,                       # 字幕の縁取りの太さ（px）
+    "OutlineColour": "FFFFFFFF",          # 縁取りの色（AARRGGBB形式）
+    "Shadow": 1.0,                        # 影の太さ（px）
+    "MarginV": 80,                        # 字幕の下マージン（px）
+    "Alignment": 2,                       # 字幕位置（1〜9, ASS形式の配置コード）1=左下 2=中央下 3=右下 4=左中央 5=中央中央 6=右中央 7=左上 8=中央上 9=右上
+
     # タイトルスタイル
-    "TitleFont": "Noto Sans JP",
-    "TitleFontSize": 120,
-    "TitleAreaX": 0,           # 画像左上からのX座標
-    "TitleAreaY": 0,           # 画像左上からのY座標
-    "TitleAreaWidth": 800,     # 表示エリア幅
-    "TitleAreaHeight": 200,    # 表示エリア高さ
-    "TitleAlignV": "top",      # 文字の矩形内表示位置(y) 'top', 'center', 'bottom'
-    "TitleAlignH": "center",   # 文字の矩形内表示位置(x) 'left', 'center', 'right'
-    "ThumbnailTitle": "",  # 空文字で未指定（デフォルトは元動画タイトル）
-    
+    "TitleFont": "Noto Sans JP",          # サムネイルタイトルのフォント名
+    "TitleFontSize": 120,                 # タイトルのフォントサイズ（pt）
+    "TitleAreaX": 0,                      # タイトル描画エリアの左上X座標（px）
+    "TitleAreaY": 0,                      # タイトル描画エリアの左上Y座標（px）
+    "TitleAreaWidth": 800,                # タイトル描画エリアの幅（px）
+    "TitleAreaHeight": 200,               # タイトル描画エリアの高さ（px）
+    "TitleAlignV": "top",                 # タイトルの縦位置（top, center, bottom）
+    "TitleAlignH": "center",              # タイトルの横位置（left, center, right）
+    "ThumbnailTitle": "",                 # サムネイル用タイトル文字列（空文字なら元動画タイトルを使用）
+
     # 弾幕スタイル
-    "DanmakuEnabled": True,
-    "DanmakuFont": "Noto Sans JP",
-    "DanmakuFontSize": 36,
-    "DanmakuColor": "FF000000",
-    "DanmakuShadow": True,
-    "DanmakuShadowColor": "FFBFBCB8",  # 影の色
-    "DanmakuTrackCount": 12,
-    "DanmakuDuration": 3.0,
-    "DanmakuSpeed": 1.0,              # スクロール速度係数
-    
+    "DanmakuEnabled": True,               # 弾幕表示の有効/無効
+    "DanmakuFont": "Noto Sans JP",        # 弾幕に使用するフォント名
+    "DanmakuFontSize": 36,                # 弾幕フォントサイズ（pt）
+    "DanmakuColour": "FFFFFFFF",          # 弾幕文字色（AARRGGBB形式）
+    "DanmakuShadow": False,               # 弾幕に影を付けるか
+    "DanmakuShadowColour": "FF000000",    # 弾幕影の色（AARRGGBB形式）
+    "DanmakuTrackCount": 12,              # 弾幕の表示レーン数
+    "DanmakuDuration": 3.0,               # 弾幕1つの表示時間（秒）
+    "DanmakuSpeed": 1.0,                  # 弾幕スクロール速度係数（1.0が標準）
+
     # Clip関連（クリップ長・無音閾値）
-    "MinClipLength": 30,
-    "MaxClipLength": 60,
-    "SilenceGap": 1.0,
+    "MinClipLength": 30,                  # クリップの最小長さ（秒）
+    "MaxClipLength": 60,                  # クリップの最大長さ（秒）
+    "SilenceGap": 1.0,                    # セグメント間の無音とみなす間隔（秒）
 }
 
 app: App = None
@@ -838,9 +838,9 @@ def convert_color_tags_to_ass(text: str) -> str:
 
     converted = re.sub(r"\{(.*?)\}", replacer, text)
 
-    # 既に色タグが含まれていなければ settings["PrimaryColor"] を追加
+    # 既に色タグが含まれていなければ settings["PrimaryColour"] を追加
     #if r"\c&H" not in converted:
-    #    color_code = settings.get("PrimaryColor", "&H00FFFFFF&")
+    #    color_code = settings.get("PrimaryColour")
     #    converted = f"{{\\c{color_code}}}" + converted
 
     return converted
@@ -917,7 +917,7 @@ def generate_comment_to_png_sequence(
     duration_per_comment=None,
     font_path=None
 ):
-    if not settings.get("DanmakuEnabled", True):
+    if not settings.get("DanmakuEnabled"):
         print("⚠️ 弾幕が無効化されているためスキップします")
         return
 
@@ -925,13 +925,13 @@ def generate_comment_to_png_sequence(
     W, H = video_size
 
     # スタイル設定の読み込み
-    font_size = settings.get("DanmakuFontSize", 36)
-    color_str = aarrggbb_to_rgba(settings.get("DanmakuColor", "FF000000"))
+    font_size = settings.get("DanmakuFontSize")
+    color_str = aarrggbb_to_rgba(settings.get("DanmakuColour"))
     show_shadow = settings.get("DanmakuShadow", True)
-    shadow_color = aarrggbb_to_rgba(settings.get("DanmakuShadowColor", "FFBFBCB8"))
+    shadow_color = aarrggbb_to_rgba(settings.get("DanmakuShadowColour"))
     track_count = settings.get("DanmakuTrackCount", 12)
-    duration = duration_per_comment or settings.get("DanmakuDuration", 3.0)
-    speed_factor = settings.get("DanmakuSpeed", 1.0)
+    duration = duration_per_comment or settings.get("DanmakuDuration")
+    speed_factor = settings.get("DanmakuSpeed")
 
     font = ImageFont.truetype(font_path or "arial.ttf", font_size)
     track_height = H // (track_count + 2)
@@ -963,7 +963,7 @@ def generate_comment_to_png_sequence(
                 x = int(W - (W + w) * progress * speed_factor)
                 y = d["y"]
                 if show_shadow:
-                    draw.text((x+2, y+2), d["text"], font=font, fill=shadow_color)
+                    draw.text((x+0.5, y+0.5), d["text"], font=font, fill=shadow_color)
                 draw.text((x, y), d["text"], font=font, fill=color_str)
         img.save(str(out_frames_dir / f"danmaku_{f:04d}.png"))
 
@@ -1007,15 +1007,13 @@ def generate_video(
         style_str = (
             f"FontName={escape_font_name(font_name)},"
             f"FontSize={settings['FontSize']},"
-            f"PrimaryColor={aarrggbb_to_ass_code(settings['PrimaryColor'])},"
+            f"PrimaryColour={aarrggbb_to_ass_code(settings['PrimaryColour'])},"
             f"Outline={settings['Outline']},"
-            f"OutlineColor={aarrggbb_to_ass_code(settings['OutlineColor'])},"
+            f"OutlineColour={aarrggbb_to_ass_code(settings['OutlineColour'])},"
             f"Shadow={settings['Shadow']},"
             f"MarginV={settings['MarginV']},"
             f"Alignment={settings['Alignment']}"
         )
-    
-    print(f"generate_video::style_str={style_str}")
 
     # 弾幕動画に直接字幕を合成
     filter_complex = (
@@ -1109,8 +1107,8 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     corrected = call_gpt_proofread_segments(segments)
 
     # 字幕max_width計算
-    font_name = settings.get("Font", "Noto Sans JP")
-    font_size = settings.get("FontSize", 24)
+    font_name = settings.get("Font")
+    font_size = settings.get("FontSize")
     resolution = get_video_resolution(clip_path)
     max_width = estimate_max_width(resolution, font_name, font_size)
 
@@ -1155,7 +1153,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
                 f.write(f"[{corr['index']}]\nBefore: {original}\nAfter:  {corrected_text}\n\n")
 
     # ⑦ ChatGPTで段落構造を生成
-    structure = call_gpt_group_segments(segments)
+    structure = call_gpt_group_segments(corrected)
     if structure:
         with open(structure_path, "w", encoding="utf-8") as f:
             json.dump(structure, f, ensure_ascii=False, indent=2)
@@ -1170,7 +1168,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     # ⑨ 弾幕PNG連番生成
     video_resolution = get_video_resolution(clip_path)
     w, h = map(int, video_resolution.split("x"))
-    font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"), "Noto Sans JP")
+    font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
     fps = 30
     generate_comment_to_png_sequence(
         comments,
@@ -1278,7 +1276,7 @@ def open_resolution_window():
     res_win.geometry("300x120")
 
     tk.Label(res_win, text="解像度を設定:").pack(pady=5)
-    current_res = settings.get("Resolution", "1080x1920")
+    current_res = settings.get("Resolution")
     default_width, default_height = current_res.lower().split("x")
 
     entry_frame = tk.Frame(res_win)
@@ -1346,9 +1344,9 @@ def open_subtitle_style_window():
     OptionMenu(font_frame, font_var, *AVAILABLE_FONTS).pack(side=LEFT)
 
     add_entry("フォントサイズ", "FontSize")
-    add_entry("文字色", "PrimaryColor")
+    add_entry("文字色", "PrimaryColour")
     add_entry("縁取りサイズ", "Outline")
-    add_entry("縁取り色", "OutlineColor")
+    add_entry("縁取り色", "OutlineColour")
     add_entry("影のサイズ", "Shadow")
     add_entry("下マージン", "MarginV")
     add_entry("位置 (1~9)", "Alignment")
@@ -1381,11 +1379,17 @@ def open_subtitle_style_window():
         settings["Font"] = font_var.get()
         for key, var in entries.items():
             val = var.get().strip()
-            if key in ["FontSize", "Outline", "Shadow", "MarginV", "Alignment"]:
+            if key in ["FontSize", "MarginV", "Alignment"]:
                 if not val.isdigit():
                     app.show_error_message("エラー", f"{key} は数値である必要があります。")
                     return
                 settings[key] = int(val)
+            elif key == "Outline" or key == "Shadow":
+                try:
+                    settings[key] = float(val)
+                except ValueError:
+                    app.show_error_message("エラー", "Outline は数値である必要があります。")
+                    return
             else:
                 settings[key] = val
 
@@ -1405,45 +1409,45 @@ def open_title_style_dialog():
 
     # ▼ フォント名選択
     tk.Label(dialog, text="フォント名:").grid(row=0, column=0)
-    title_font_var = tk.StringVar(value=settings.get("TitleFont", "Noto Sans JP"))
+    title_font_var = tk.StringVar(value=settings.get("TitleFont"))
     font_choices = AVAILABLE_FONTS
     tk.OptionMenu(dialog, title_font_var, *font_choices).grid(row=0, column=1)
 
     # ▼ フォントサイズ
     tk.Label(dialog, text="フォントサイズ:").grid(row=1, column=0)
-    title_font_size_var = tk.IntVar(value=settings.get("TitleFontSize", 120))
+    title_font_size_var = tk.IntVar(value=settings.get("TitleFontSize"))
     tk.Spinbox(dialog, from_=10, to=400, textvariable=title_font_size_var).grid(row=1, column=1)
 
     # エリア
     tk.Label(dialog, text="X座標:").grid(row=2, column=0)
-    x_var = tk.IntVar(value=settings.get("TitleAreaX", 0))
+    x_var = tk.IntVar(value=settings.get("TitleAreaX"))
     tk.Spinbox(dialog, from_=0, to=9999, textvariable=x_var).grid(row=2, column=1)
 
     tk.Label(dialog, text="Y座標:").grid(row=3, column=0)
-    y_var = tk.IntVar(value=settings.get("TitleAreaY", 0))
+    y_var = tk.IntVar(value=settings.get("TitleAreaY"))
     tk.Spinbox(dialog, from_=0, to=9999, textvariable=y_var).grid(row=3, column=1)
 
     tk.Label(dialog, text="幅:").grid(row=4, column=0)
-    w_var = tk.IntVar(value=settings.get("TitleAreaWidth", 800))
+    w_var = tk.IntVar(value=settings.get("TitleAreaWidth"))
     tk.Spinbox(dialog, from_=0, to=9999, textvariable=w_var).grid(row=4, column=1)
 
     tk.Label(dialog, text="高さ:").grid(row=5, column=0)
-    h_var = tk.IntVar(value=settings.get("TitleAreaHeight", 200))
+    h_var = tk.IntVar(value=settings.get("TitleAreaHeight"))
     tk.Spinbox(dialog, from_=0, to=9999, textvariable=h_var).grid(row=5, column=1)
 
     # 垂直位置
     tk.Label(dialog, text="縦位置:").grid(row=6, column=0)
-    v_var = tk.StringVar(value=settings.get("TitleAlignV", "top"))
+    v_var = tk.StringVar(value=settings.get("TitleAlignV"))
     ttk.Combobox(dialog, textvariable=v_var, values=["top", "center", "bottom"]).grid(row=6, column=1)
 
     # 水平位置
     tk.Label(dialog, text="横位置:").grid(row=7, column=0)
-    h_align_var = tk.StringVar(value=settings.get("TitleAlignH", "center"))
+    h_align_var = tk.StringVar(value=settings.get("TitleAlignH"))
     ttk.Combobox(dialog, textvariable=h_align_var, values=["left", "center", "right"]).grid(row=7, column=1)
     
     # タイトルテキスト（手動入力）
     tk.Label(dialog, text="サムネイル表示文字:").grid(row=8, column=0)
-    title_text_var = tk.StringVar(value=settings.get("ThumbnailTitle", ""))
+    title_text_var = tk.StringVar(value=settings.get("ThumbnailTitle"))
     tk.Entry(dialog, textvariable=title_text_var, width=30).grid(row=8, column=1)
 
     # 保存
@@ -1482,25 +1486,25 @@ def open_danmaku_style_window():
         entries[key] = (var, var_type)
 
     # 表示ON/OFF
-    enabled_var = BooleanVar(value=settings.get("DanmakuEnabled", True))
+    enabled_var = BooleanVar(value=settings.get("DanmakuEnabled"))
     Checkbutton(win, text="弾幕を表示する", variable=enabled_var).pack(pady=5)
 
     # フォント選択
     font_frame = Frame(win)
     font_frame.pack(pady=4, anchor=W)
     Label(font_frame, text="フォント", width=18, anchor=W).pack(side=LEFT)
-    font_var = StringVar(value=settings.get("DanmakuFont", "Noto Sans JP"))
+    font_var = StringVar(value=settings.get("DanmakuFont"))
     all_fonts = AVAILABLE_FONTS + [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     OptionMenu(font_frame, font_var, *all_fonts).pack(side=LEFT)
 
     add_entry("フォントサイズ", "DanmakuFontSize", int)
-    add_entry("フォント色 (#RRGGBB)", "DanmakuColor", str)
-    add_entry("影の色 (#RRGGBB)", "DanmakuShadowColor", str)
+    add_entry("フォント色 (#FFRRGGBB)", "DanmakuColour", str)
+    add_entry("影の色 (#FFRRGGBB)", "DanmakuShadowColour", str)
     add_entry("表示時間（秒）", "DanmakuDuration", float)
     add_entry("表示レーン数", "DanmakuTrackCount", int)
     add_entry("スクロール速度", "DanmakuSpeed", float)
 
-    shadow_var = BooleanVar(value=settings.get("DanmakuShadow", True))
+    shadow_var = BooleanVar(value=settings.get("DanmakuShadow"))
     Checkbutton(win, text="影を付ける", variable=shadow_var).pack(pady=5)
 
     def save_danmaku_style():
@@ -1662,6 +1666,9 @@ def aarrggbb_to_ass_code(color: str) -> str:
     if len(c) != 8:
         raise ValueError("AARRGGBB形式のみを受け付けます")
     aa, rr, gg, bb = c[0:2], c[2:4], c[4:6], c[6:8]
+    # ASSの透明度仕様に合わせてUIのアルファ値を反転
+    aa_val = 255 - int(aa, 16)
+    aa = f"{aa_val:02X}"
     return f"&H{aa}{bb}{gg}{rr}"
     
 def rgba_to_aarrggbb(r, g, b, a):
@@ -1740,9 +1747,9 @@ def generate_subtitle_filter(srt_path: Path) -> str:
     style_str = (
         f"FontName={escape_font_name(font_name)},"
         f"FontSize={settings['FontSize']},"
-        f"PrimaryColor={aarrggbb_to_ass_code(settings['PrimaryColor'])},"
+        f"PrimaryColour={aarrggbb_to_ass_code(settings['PrimaryColour'])},"
         f"Outline={settings['Outline']},"
-        f"OutlineColor={aarrggbb_to_ass_code(settings['OutlineColor'])},"
+        f"OutlineColour={aarrggbb_to_ass_code(settings['OutlineColour'])},"
         f"Shadow={settings['Shadow']},"
         f"MarginV={settings['MarginV']},"
         f"Alignment={settings['Alignment']}"
@@ -1883,9 +1890,9 @@ def generate_clips(segment_path: Path):
         print(f"📝 字幕セグメント数: {len(segments)}")
         clips = group_segments_by_duration(
             segments,
-            settings.get("MinClipLength", 30),
-            settings.get("MaxClipLength", 60),
-            settings.get("SilenceGap", 1.0)
+            settings.get("MinClipLength"),
+            settings.get("MaxClipLength"),
+            settings.get("SilenceGap")
         )
         print(f"📌 抽出されたクリップ数: {len(clips)}")
         output_dir = output_dir_path / "clip" / segment_path.stem
@@ -1989,7 +1996,7 @@ def download_video():
     save_dir = app.file_manager.output_dir_path(base_name)
     print("動画ダウンロード開始・・・")
     # 🔸 ユーザー設定解像度
-    resolution = settings.get("Resolution", "1080x1920")
+    resolution = settings.get("Resolution")
     target_width, target_height = map(int, resolution.lower().split("x"))
     # 🔸 保存ファイル名（元タイトルベース）
     base_output = save_dir / f"{base_name}_1920x1080.mp4"
@@ -2235,12 +2242,12 @@ def calc_title_position(img, lines, font, settings):
     """
     global app
 
-    x0 = settings.get("TitleAreaX", 0)
-    y0 = settings.get("TitleAreaY", 0)
-    area_w = settings.get("TitleAreaWidth", img.width)
-    area_h = settings.get("TitleAreaHeight", img.height // 3)
-    align_v = settings.get("TitleAlignV", "top")
-    align_h = settings.get("TitleAlignH", "center")
+    x0 = settings.get("TitleAreaX")
+    y0 = settings.get("TitleAreaY")
+    area_w = settings.get("TitleAreaWidth")
+    area_h = settings.get("TitleAreaHeight")
+    align_v = settings.get("TitleAlignV")
+    align_h = settings.get("TitleAlignH")
     # 1行の高さ
     _, line_h = get_text_size("あ", font)
     total_h = line_h * len(lines)
@@ -2259,7 +2266,7 @@ def draw_title_on_img(img, title, font, settings):
     global app
 
     draw = ImageDraw.Draw(img)
-    area_w = settings.get("TitleAreaWidth", img.width)
+    area_w = settings.get("TitleAreaWidth")
     # ラップ
     lines = wrap_title_text(title, font, area_w)
     # 位置
@@ -2295,20 +2302,20 @@ def generate_all_thumbnails_gui():
         print("❌ 動画ファイルが選択されませんでした")
         return
     # ▼ サムネイル題名スタイル設定の取得（なければデフォルト）
-    title_font_name = settings.get("TitleFont", "Noto Sans JP")
-    title_font_size = settings.get("TitleFontSize", 120)
-    area_x = settings.get("TitleAreaX", 0)
-    area_y = settings.get("TitleAreaY", 0)
+    title_font_name = settings.get("TitleFont")
+    title_font_size = settings.get("TitleFontSize")
+    area_x = settings.get("TitleAreaX")
+    area_y = settings.get("TitleAreaY")
     area_w = settings.get("TitleAreaWidth")
     area_h = settings.get("TitleAreaHeight")
-    align_v = settings.get("TitleAlignV", "top")    # "top", "center", "bottom"
-    align_h = settings.get("TitleAlignH", "center") # "left", "center", "right"
+    align_v = settings.get("TitleAlignV")    # "top", "center", "bottom"
+    align_h = settings.get("TitleAlignH") # "left", "center", "right"
     font_path = CUSTOM_FONT_PATHS.get(title_font_name)
     video_path = Path(mp4_path)
     valleys = app.stream_analysis.valleys
     peaks = app.stream_analysis.peaks
     audio_y = app.stream_analysis.audio_y
-    title = settings.get("ThumbnailTitle", app.stream_analysis.safe_title)
+    title = settings.get("ThumbnailTitle")
     if not valleys or not peaks or not audio_y:
         app.show_error_message("エラー", "グラフ分析データがありません（まず「分析してグラフを表示」を実行してください）")
         return
