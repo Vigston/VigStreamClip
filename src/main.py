@@ -927,9 +927,9 @@ def generate_comment_to_png_sequence(
     # スタイル設定の読み込み
     font_size = settings.get("DanmakuFontSize")
     color_str = aarrggbb_to_rgba(settings.get("DanmakuColour"))
-    show_shadow = settings.get("DanmakuShadow", True)
+    show_shadow = settings.get("DanmakuShadow")
     shadow_color = aarrggbb_to_rgba(settings.get("DanmakuShadowColour"))
-    track_count = settings.get("DanmakuTrackCount", 12)
+    track_count = settings.get("DanmakuTrackCount")
     duration = duration_per_comment or settings.get("DanmakuDuration")
     speed_factor = settings.get("DanmakuSpeed")
 
