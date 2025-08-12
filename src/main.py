@@ -29,6 +29,7 @@ import traceback
 import copy
 from shutil import which
 from chat_downloader import ChatDownloader
+from io import BytesIO
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -907,6 +908,142 @@ def split_long_subtitle(text: str, max_chars: int = 40, words: list = None) -> l
             result.append((None, None, b))
     return result
 
+# --- 追加: emote画像キャッシュ ---
+_emote_cache_raw = {}        # URL -> Image(RGBA)
+_emote_cache_sized = {}      # (URL, size) -> Image(RGBA)
+
+def _load_emote_raw(url: str) -> Image.Image:
+    if url not in _emote_cache_raw:
+        print(f"[EmoteDL] ダウンロード開始: {url}")
+        with urllib.request.urlopen(url) as resp:
+            data = resp.read()
+        _emote_cache_raw[url] = Image.open(BytesIO(data)).convert("RGBA")
+        print(f"[EmoteDL] ダウンロード完了: {url}")
+    else:
+        print(f"[EmoteDL] キャッシュ使用: {url}")
+    return _emote_cache_raw[url]
+
+def get_emote_image(emote: dict, size: int) -> Image.Image:
+    """emote辞書から指定サイズのPIL.Imageを取得（キャッシュあり）"""
+    # 48x48 を優先、それ以外は先頭
+    img_info = next((img for img in emote.get("images", []) if img.get("id") == "48x48"),
+                    (emote.get("images") or [])[0])
+    url = img_info["url"]
+    key = (url, size)
+    if key not in _emote_cache_sized:
+        base = _load_emote_raw(url)
+        _emote_cache_sized[key] = base.resize((size, size), Image.LANCZOS)
+        print(f"[EmoteDL] リサイズ＆キャッシュ: {url} → {size}x{size}")
+    else:
+        print(f"[EmoteDL] リサイズキャッシュ使用: {url} ({size}x{size})")
+    return _emote_cache_sized[key]
+
+# --- 追加: テキスト+emoteをトークン化 ---
+def tokenize_rich_message(message: str, emotes: list[dict]) -> list[dict]:
+    """
+    例: [{"type":"text","value":"やったー "},
+         {"type":"emote","name":":_ペンライト:"},
+         {"type":"text","value":" 最高！"}]
+    """
+    if not emotes:
+        return [{"type":"text","value": message}]
+
+    # nameの長い順でマッチ（部分一致の衝突を避ける）
+    names = sorted([e["name"] for e in emotes if "name" in e], key=len, reverse=True)
+    i = 0
+    parts = []
+    while i < len(message):
+        hit = None
+        for nm in names:
+            if message.startswith(nm, i):
+                hit = nm
+                break
+        if hit:
+            if i > 0 and (not parts or parts[-1]["type"] != "text"):
+                # 直前までのテキストを切り出す
+                pass
+            # 直前テキスト
+            prev_text = message[:i]
+            if prev_text:
+                # 直前のtextが既にあるなら結合
+                if parts and parts[-1]["type"] == "text":
+                    parts[-1]["value"] += prev_text
+                else:
+                    parts.append({"type": "text", "value": prev_text})
+            # emote
+            parts.append({"type": "emote", "name": hit})
+            # 残りを対象に再開
+            message = message[i+len(hit):]
+            i = 0
+        else:
+            i += 1
+    if message:
+        if parts and parts[-1]["type"] == "text":
+            parts[-1]["value"] += message
+        else:
+            parts.append({"type":"text","value": message})
+    return parts
+
+# --- 追加: 幅計測（emote幅を含む） ---
+def measure_rich_width(parts: list[dict], font: ImageFont.FreeTypeFont, emote_size: int) -> int:
+    if not parts:
+        return 0
+    dummy = Image.new("RGBA", (1,1), (0,0,0,0))
+    draw = ImageDraw.Draw(dummy)
+
+    width = 0
+    for p in parts:
+        if p["type"] == "text" and p["value"]:
+            bbox = draw.textbbox((0,0), p["value"], font=font)
+            width += (bbox[2] - bbox[0])
+        elif p["type"] == "emote":
+            width += emote_size
+        # 文字とemoteの間は狭めのスペースを入れて見栄え安定（任意）
+        # ただし行末は不要
+    return width
+
+# --- 追加: 描画（影対応／emoteはベースライン揃え） ---
+def draw_comment_with_emotes(
+    img: Image.Image,
+    x: int,
+    y: int,
+    parts: list[dict],
+    emotes: list[dict],
+    font: ImageFont.FreeTypeFont,
+    fill,
+    show_shadow: bool,
+    shadow_color,
+    emote_size: int
+):
+    draw = ImageDraw.Draw(img)
+    cursor_x = x
+
+    emote_map = {e["name"]: e for e in (emotes or []) if "name" in e}
+
+    try:
+        ascent, descent = font.getmetrics()
+    except Exception:
+        ascent, descent = 0, 0
+    baseline = y + ascent
+
+    for p in parts:
+        if p["type"] == "text" and p["value"]:
+            if show_shadow:
+                draw.text((cursor_x+0.5, y+0.5), p["value"], font=font, fill=shadow_color)
+            draw.text((cursor_x, y), p["value"], font=font, fill=fill)
+            w = draw.textbbox((0,0), p["value"], font=font)
+            cursor_x += (w[2] - w[0])
+        elif p["type"] == "emote":
+            e = emote_map.get(p["name"])
+            if not e:
+                continue
+            print(f"[EmoteDraw] '{p['name']}' を画像に差し替え")
+            icon = get_emote_image(e, emote_size)
+            paste_y = baseline - emote_size
+            img.alpha_composite(icon, (int(cursor_x), int(paste_y)))
+            cursor_x += emote_size
+
+# --- 差し替え: emotes対応の弾幕フレーム生成 ---
 def generate_comment_to_png_sequence(
     comments,
     video_size,
@@ -933,38 +1070,56 @@ def generate_comment_to_png_sequence(
     duration = duration_per_comment or settings.get("DanmakuDuration")
     speed_factor = settings.get("DanmakuSpeed")
 
+    # 推奨：絵文字のサイズはフォントサイズに少し余裕を持たせる
+    emote_size = int(round(font_size * 1.1))
+
     font = ImageFont.truetype(font_path or "arial.ttf", font_size)
     track_height = H // (track_count + 2)
     tracks = [track_height * (i+1) for i in range(track_count)]
 
+    # 事前にトークン化＆幅を計算しておく
     danmaku = []
     for i, c in enumerate(comments):
-        t0 = float(c["time_in_seconds"]) - start_time
-        if 0 <= t0 < (end_time - start_time):
-            y = tracks[i % track_count]
-            danmaku.append({
-                "text": c["message"],
-                "start": t0,
-                "y": y,
-            })
+        t0 = float(c.get("time_in_seconds", -1)) - start_time
+        if not (0 <= t0 < (end_time - start_time)):
+            continue
+        y = tracks[i % track_count]
+        message = c.get("message", "")
+        emotes = c.get("emotes") or []  # 無ければ空配列
+        parts = tokenize_rich_message(message, emotes)
+        msg_width = measure_rich_width(parts, font, emote_size)
+        danmaku.append({
+            "parts": parts,
+            "emotes": emotes,
+            "start": t0,
+            "y": y,
+            "width": msg_width
+        })
 
     out_frames_dir = Path(out_frames_dir)
     out_frames_dir.mkdir(parents=True, exist_ok=True)
+
     for f in range(frame_count):
         t = f / fps
         img = Image.new("RGBA", (W, H), (0,0,0,0))
-        draw = ImageDraw.Draw(img)
+
         for d in danmaku:
             appear = d["start"]
             if appear <= t < appear + duration:
-                bbox = draw.textbbox((0, 0), d["text"], font=font)
-                w = bbox[2] - bbox[0]
+                # メッセージ全体の横幅を使用してスクロール距離を計算
+                w_all = d["width"]
                 progress = (t - appear) / duration
-                x = int(W - (W + w) * progress * speed_factor)
+                x = int(W - (W + w_all) * progress * speed_factor)
                 y = d["y"]
-                if show_shadow:
-                    draw.text((x+0.5, y+0.5), d["text"], font=font, fill=shadow_color)
-                draw.text((x, y), d["text"], font=font, fill=color_str)
+
+                draw_comment_with_emotes(
+                    img=img, x=x, y=y,
+                    parts=d["parts"], emotes=d["emotes"],
+                    font=font, fill=color_str,
+                    show_shadow=show_shadow, shadow_color=shadow_color,
+                    emote_size=emote_size
+                )
+
         img.save(str(out_frames_dir / f"danmaku_{f:04d}.png"))
 
 def combine_video_with_danmaku_overlay(
