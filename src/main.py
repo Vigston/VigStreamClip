@@ -499,7 +499,7 @@ settings = {
     "DanmakuColour": "FFFFFFFF",          # 弾幕文字色（AARRGGBB形式）
     "DanmakuShadow": False,               # 弾幕に影を付けるか
     "DanmakuShadowColour": "FF000000",    # 弾幕影の色（AARRGGBB形式）
-    "DanmakuTrackCount": 12,              # 弾幕の表示レーン数
+    "DanmakuTrackCount": 6,              # 弾幕の表示レーン数
     "DanmakuDuration": 3.0,               # 弾幕1つの表示時間（秒）
     "DanmakuSpeed": 1.0,                  # 弾幕スクロール速度係数（1.0が標準）
 
