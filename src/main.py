@@ -30,6 +30,7 @@ import copy
 from shutil import which
 from chat_downloader import ChatDownloader
 from io import BytesIO
+import urllib.request
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -350,6 +351,7 @@ class App:
         tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5)
         tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder).start()).pack(pady=5)
         tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file).start()).pack(pady=5)
+        tk.Button(self.frame, text="セグメントに字幕&弾幕追加", command=lambda: threading.Thread(target=subtitle_and_danmaku_for_video_gui).start()).pack(pady=5)
         tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5)
     
     def setup_menu(self):
@@ -914,13 +916,13 @@ _emote_cache_sized = {}      # (URL, size) -> Image(RGBA)
 
 def _load_emote_raw(url: str) -> Image.Image:
     if url not in _emote_cache_raw:
-        print(f"[EmoteDL] ダウンロード開始: {url}")
+        #print(f"[EmoteDL] ダウンロード開始: {url}")
         with urllib.request.urlopen(url) as resp:
             data = resp.read()
         _emote_cache_raw[url] = Image.open(BytesIO(data)).convert("RGBA")
-        print(f"[EmoteDL] ダウンロード完了: {url}")
-    else:
-        print(f"[EmoteDL] キャッシュ使用: {url}")
+        #print(f"[EmoteDL] ダウンロード完了: {url}")
+    #else:
+        #print(f"[EmoteDL] キャッシュ使用: {url}")
     return _emote_cache_raw[url]
 
 def get_emote_image(emote: dict, size: int) -> Image.Image:
@@ -933,9 +935,9 @@ def get_emote_image(emote: dict, size: int) -> Image.Image:
     if key not in _emote_cache_sized:
         base = _load_emote_raw(url)
         _emote_cache_sized[key] = base.resize((size, size), Image.LANCZOS)
-        print(f"[EmoteDL] リサイズ＆キャッシュ: {url} → {size}x{size}")
-    else:
-        print(f"[EmoteDL] リサイズキャッシュ使用: {url} ({size}x{size})")
+        #print(f"[EmoteDL] リサイズ＆キャッシュ: {url} → {size}x{size}")
+    #else:
+        #print(f"[EmoteDL] リサイズキャッシュ使用: {url} ({size}x{size})")
     return _emote_cache_sized[key]
 
 # --- 追加: テキスト+emoteをトークン化 ---
@@ -1037,7 +1039,7 @@ def draw_comment_with_emotes(
             e = emote_map.get(p["name"])
             if not e:
                 continue
-            print(f"[EmoteDraw] '{p['name']}' を画像に差し替え")
+            #print(f"[EmoteDraw] '{p['name']}' を画像に差し替え")
             icon = get_emote_image(e, emote_size)
             paste_y = baseline - emote_size
             img.alpha_composite(icon, (int(cursor_x), int(paste_y)))
@@ -2161,7 +2163,7 @@ def download_video():
     subprocess.run([
         str(YTDLP_PATH),
         "--force-overwrites",
-        "-f", "299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        "-f", "312+234/617+234/299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
         "--merge-output-format", "mp4",
         "-o", str(base_output),
         app.stream_analysis.video_url
@@ -2362,6 +2364,181 @@ def extract_valley_peak_pairs(valleys, peaks):
             pairs.append((prev_valley, t))
             prev_valley = None  # 次のvalleyまで待つ
     return pairs
+
+def get_video_duration_seconds(video_path: Path) -> float:
+    """ffprobeで動画の実長(秒)を取得"""
+    result = subprocess.run([
+        str(FFPROBE_PATH), "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(video_path)
+    ], capture_output=True, text=True, check=True)
+    try:
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+def subtitle_and_danmaku_for_video_gui():
+    """
+    エクスプローラーで動画を1本選び、その動画に対して
+    Whisper→校正→SRT→（あれば）弾幕→焼き付け までを一括実行
+    """
+    global app
+    file_path = filedialog.askopenfilename(
+        title="字幕＆弾幕を追加する動画を選択",
+        filetypes=[("MP4ファイル", "*.mp4")]
+    )
+    if not file_path:
+        print("⚠️ 動画ファイルが選択されませんでした。処理を中止します。")
+        return
+
+    # URL欄からsafe_title/chatパスなどを確定（未入力時は警告）
+    if update_paths_from_url() == False:
+        return
+
+    try:
+        apply_subtitle_and_danmaku_to_video(Path(file_path))
+        app.show_info_message("完了", "選択した動画への字幕＆弾幕の追加が完了しました。")
+    except Exception as e:
+        traceback.print_exc()
+        app.show_error_message("エラー", f"字幕＆弾幕の追加に失敗しました:\n{e}")
+
+def apply_subtitle_and_danmaku_to_video(video_path: Path):
+    """
+    1本の動画に対して、クリップ生成でやっている処理を“動画全体”に適用する。
+    - segment_info.jsonにマッチすれば、その絶対秒でチャット抽出して弾幕生成
+    - 見つからない場合は開始秒をダイアログで尋ね、未入力なら弾幕なしで字幕のみ
+    出力は元動画と同じフォルダに *_final.mp4 を作る
+    """
+    global app, whisper_model
+    fileMgr = app.file_manager
+    segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
+    output_dir_path = fileMgr.output_dir_path(app.stream_analysis.safe_title)
+    segment_info_path = segment_dir_path / "segment_info.json"
+
+    # 出力名
+    stem = video_path.stem
+    work_dir = output_dir_path / "clip" / stem
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_srt_path = work_dir / f"{stem}_raw.srt"
+    srt_path     = work_dir / f"{stem}.srt"
+    frames_dir   = work_dir / f"danmaku_frames"
+    overlay_out  = work_dir / f"{stem}_danmaku.mp4"
+    final_out    = work_dir / f"{stem}_final.mp4"
+
+    # 解析に必要な情報
+    chat_json_path  = output_dir_path / f"{app.stream_analysis.safe_title}_chat.json"
+    if not chat_json_path.exists():
+        raise RuntimeError("チャットJSONがありません。先に「🛰️ チャットを取得」を実行してください。")
+
+    # 可能ならsegment_info.jsonで絶対秒を自動特定
+    abs_start = None
+    abs_end   = None
+    dur = get_video_duration_seconds(video_path)
+    if segment_info_path.exists():
+        try:
+            with open(segment_info_path, "r", encoding="utf-8") as f:
+                metas = json.load(f)
+            hit = next((m for m in metas if m.get("file") == video_path.name), None)
+            if hit:
+                abs_start = float(hit["start_sec"])
+                abs_end   = float(hit["end_sec"])
+        except Exception:
+            pass
+
+    # 見つからなければ開始秒を聞く（空/キャンセルなら弾幕なしで進める）
+    if abs_start is None:
+        start_text = simpledialog.askstring(
+            "開始秒を入力（任意）",
+            "配信全体の中で、この動画の“開始秒”を入力してください。\n"
+            "（例）12345\n\n未入力でOKすると弾幕なしで字幕だけ焼き付けます。"
+        )
+        if start_text and start_text.strip().isdigit():
+            abs_start = float(start_text.strip())
+            abs_end   = abs_start + (dur or 0.0)
+
+    # ① Whisperで全文字幕
+    print(f"📝 Whisperで文字起こし中: {video_path.name}")
+    result = whisper_model.transcribe(str(video_path), language="ja", task="transcribe")
+    segments = result.get("segments") or []
+    if not segments:
+        raise RuntimeError("Whisperのセグメントが空でした。")
+
+    # ② セグメント微調整＆重複除去
+    segments = adjust_segment_ends(str(video_path), segments)
+    segments = remove_redundant_segments(segments)
+    if not any(seg["text"].strip() for seg in segments):
+        raise RuntimeError("有効な発話が検出できませんでした。")
+
+    # ③ 校閲前SRT
+    with open(raw_srt_path, "w", encoding="utf-8") as f:
+        for i, seg in enumerate(segments):
+            f.write(f"{i+1}\n{format_timestamp(seg['start'])} --> {format_timestamp(seg['end'])}\n{seg['text'].strip()}\n\n")
+
+    # ④ ChatGPTで誤字脱字の軽微修正
+    corrected = call_gpt_proofread_segments(segments)
+
+    # ⑤ SRT書き出し（文が長いときは既存ロジックで分割）
+    with open(srt_path, "w", encoding="utf-8") as f:
+        entry_num = 1
+        for corr in corrected:
+            seg = segments[corr["index"]]
+            text = corr["text"].strip()
+            blocks = split_long_subtitle(text, 40) or [text]
+
+            seg_start = seg["start"]
+            seg_end   = seg["end"]
+            total_chars = sum(len(b) for b in blocks) or 1
+            t = seg_start
+            for j, b in enumerate(blocks):
+                block_ratio = len(b) / total_chars
+                next_t = seg_end if j == len(blocks)-1 else (t + (seg_end - seg_start) * block_ratio)
+                f.write(f"{entry_num}\n{format_timestamp(t)} --> {format_timestamp(next_t)}\n{b}\n\n")
+                entry_num += 1
+                t = next_t
+
+    # ⑥ 弾幕（任意）→ PNG連番 → overlay
+    used_base_for_subs = video_path  # デフォは元動画（弾幕なし）
+    if abs_start is not None and abs_end is not None and abs_end > abs_start:
+        comments = extract_comments_for_clip(chat_json_path, abs_start, abs_end)
+        print(f"💬 弾幕コメント抽出: {len(comments)} 件")
+        if comments:
+            # 解像度とフォント
+            video_resolution = get_video_resolution(video_path)
+            w, h = map(int, video_resolution.split("x"))
+            font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
+            fps = 30
+            generate_comment_to_png_sequence(
+                comments=comments,
+                video_size=(w, h),
+                out_frames_dir=frames_dir,
+                start_time=abs_start,
+                end_time=abs_end,
+                fps=fps,
+                duration_per_comment=settings.get("DanmakuDuration"),
+                font_path=font_path
+            )
+            combine_video_with_danmaku_overlay(
+                clip_path=video_path,
+                frames_dir=frames_dir,
+                out_path=overlay_out,
+                fps=fps
+            )
+            used_base_for_subs = overlay_out
+        else:
+            print("⚠️ 指定区間にコメントが見つからなかったため、弾幕はスキップします。")
+    else:
+        print("ℹ️ 絶対開始秒が不明のため、弾幕はスキップ（字幕のみ焼き付け）。")
+
+    # ⑦ 字幕焼き付け（弾幕ありならoverlay後に）
+    print("🔥 字幕焼き付け中・・・")
+    generate_video(
+        danmaku_video=used_base_for_subs,
+        srt_path=srt_path,
+        output_path=final_out
+    )
+    print(f"✅ 完了: {final_out}")
 
 def get_text_size(text, font):
     if hasattr(font, "getbbox"):
