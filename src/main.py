@@ -374,6 +374,7 @@ class App:
         setting_menu.add_command(label="サムネイル", command=lambda: open_title_style_dialog())
         setting_menu.add_command(label="弾幕", command=lambda: open_danmaku_style_window())
         setting_menu.add_command(label="クリップ", command=lambda: open_clip_setting_window())
+        setting_menu.add_command(label="背景", command=lambda: open_background_style_window())
         setting_menu.add_separator()
         setting_menu.add_command(label="💾 設定を保存", command=lambda: (
             save_settings(),
@@ -509,6 +510,9 @@ settings = {
     "MinClipLength": 30,                  # クリップの最小長さ（秒）
     "MaxClipLength": 60,                  # クリップの最大長さ（秒）
     "SilenceGap": 1.0,                    # セグメント間の無音とみなす間隔（秒）
+    
+    # 背景スタイル
+    "BackgroundColour": "FF000000",   # 背景色（AARRGGBB形式, 例: 黒）
 }
 
 app: App = None
@@ -1724,6 +1728,30 @@ def open_clip_setting_window():
 
     Button(win, text="保存", command=save_clip_settings).pack(pady=10)
 
+def open_background_style_window():
+    global app
+    root = app.root
+    win = Toplevel(root)
+    win.title("背景の設定")
+    win.geometry("300x200")
+
+    # 背景色（AARRGGBB）
+    Label(win, text="背景色 (AARRGGBB)").pack(pady=5)
+    colour_var = StringVar(value=settings.get("BackgroundColour"))
+    Entry(win, textvariable=colour_var, width=20).pack()
+
+    def save_background_style():
+        val = colour_var.get().strip()
+        if len(val) != 8:
+            app.show_error_message("エラー", "背景色は AARRGGBB 形式で入力してください。")
+            return
+        settings["BackgroundColour"] = val
+        save_settings()
+        app.show_info_message("保存完了", "背景設定が保存されました。")
+        win.destroy()
+
+    Button(win, text="保存", command=save_background_style).pack(pady=10)
+
 # 字幕の焼き直し
 def clip_reburn_file_gui():
     # 元MP4
@@ -1830,6 +1858,19 @@ def aarrggbb_to_ass_code(color: str) -> str:
     
 def rgba_to_aarrggbb(r, g, b, a):
     return f"{a:02X}{r:02X}{g:02X}{b:02X}"
+
+def aarrggbb_to_ffmpeg_color(aarrggbb: str) -> str:
+    s = aarrggbb.lstrip("#").upper()
+    if len(s) != 8:
+        return "0x000000"
+    rr = s[2:4]
+    gg = s[4:6]
+    bb = s[6:8]
+    aa = int(s[0:2], 16)
+    color = f"0x{rr}{gg}{bb}"
+    if aa < 255:
+        return f"{color}@{aa/255:.3f}"
+    return color
 
 def open_color_code_preview():
     dlg = Toplevel()
@@ -2174,10 +2215,12 @@ def download_video():
         app.stream_analysis.video_file = str(base_output)
         app.show_info_message("完了", f"動画取得完了: {base_output.name}")
         return
+    
+    bgColor = aarrggbb_to_ffmpeg_color(settings.get("BackgroundColour"))
     # 🔹 アスペクト比維持＋黒帯で中央寄せ
     vf_filter = (
         f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease," 
-        f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
+        f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color={bgColor}"
     )
     print(f"動画(1920x1080)を使って{resolution}に編集中・・・")
     subprocess.run([
