@@ -31,6 +31,7 @@ from shutil import which
 from chat_downloader import ChatDownloader
 from io import BytesIO
 import urllib.request
+import queue
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -176,6 +177,37 @@ class DualWriter:
             except Exception:
                 pass
 
+# クリップデータ
+@dataclass(slots=True)
+class Clip:
+    start_time: float
+    end_time: float
+
+# 配信データ
+@dataclass(slots=True)
+class StreamAnalysis:
+    video_url: str = ""
+    safe_title: str = ""
+    raw_title: str = ""
+    chat_file: str = ""
+    video_file: str = ""
+    x: List[int] = field(default_factory=list)
+    y: List[int] = field(default_factory=list)
+    x_labels: List[str] = field(default_factory=list)
+    valleys: List[int] = field(default_factory=list)
+    peaks: List[int] = field(default_factory=list)
+    audio_x: List[int] = field(default_factory=list)
+    audio_y: List[float] = field(default_factory=list)
+    locked: bool = False  # キュー登録時に確定したURL/タイトル/パスを再利用するためのロック
+
+# ジョブ型
+@dataclass(slots=True)
+class OneClickJob:
+    id: int
+    sa: StreamAnalysis
+    settings_snapshot: dict  # ← 追加：登録時の設定スナップショット
+    status: str = "QUEUED"   # QUEUED / RUNNING / DONE / ERROR
+
 # アプリデータ
 class App:
     class FileManager:
@@ -281,6 +313,57 @@ class App:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=2)
             print(f"✅ ファイルごとの設定を保存しました: {path}")
+        
+        def load_analysis_results(self, stream_analysis):
+            def_output_dir = BASE_DIR_PATH / "output"
+            def_in_file = def_output_dir / "analysis.json"
+
+            # デフォルトの分析結果があれば読み込む
+            if def_in_file.exists():
+                with open(def_in_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                stream_analysis.x = data.get("x", [])
+                stream_analysis.y = data.get("y", [])
+                stream_analysis.x_labels = data.get("x_labels", [])
+                stream_analysis.valleys = data.get("valleys", [])
+                stream_analysis.peaks = data.get("peaks", [])
+                stream_analysis.audio_x = np.array(data.get("audio_x", []))
+                stream_analysis.audio_y = data.get("audio_y", [])
+                stream_analysis.raw_title = data.get("raw_title", "")
+                stream_analysis.safe_title = data.get("safe_title", "")
+                stream_analysis.video_url = data.get("video_url", "")
+
+                print(f"✅ 分析結果を読み込みました: {def_in_file}")
+
+             # 🔹 URLを入力欄に反映
+            if hasattr(app, "entry") and stream_analysis.video_url:
+                app.entry.delete(0, tk.END)
+                app.entry.insert(0, stream_analysis.video_url)
+                
+
+        def save_analysis_results(self, stream_analysis):
+            def_output_dir = BASE_DIR_PATH / "output"
+            def_out_file = def_output_dir / "analysis.json"
+
+            output_dir = self.output_dir_path(stream_analysis.safe_title)
+            out_file = output_dir / "analysis.json"
+            data = {
+                "x": stream_analysis.x,
+                "y": stream_analysis.y,
+                "x_labels": stream_analysis.x_labels,
+                "valleys": stream_analysis.valleys,
+                "peaks": stream_analysis.peaks,
+                "audio_x": list(stream_analysis.audio_x),
+                "audio_y": list(stream_analysis.audio_y),
+                "raw_title": stream_analysis.raw_title,
+                "safe_title": stream_analysis.safe_title,
+                "video_url": stream_analysis.video_url,
+            }
+            with open(def_out_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=conv_json_from_py)
+            with open(out_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=conv_json_from_py)
+            print(f"✅ 分析結果を保存しました: {def_out_file, out_file}")
     
     class StdoutRedirector:
         def __init__(self, text_widget):
@@ -321,6 +404,15 @@ class App:
         self.file_manager = self.FileManager(BASE_DIR_PATH)
         self._project_file_path_name = None  # UI選択中ファイル名
         self.settings = settings  # 各ファイルごとの設定をこのdictに切り替え保存する
+        self.is_oneclick_mode = False
+        # キュー状態
+        self.queue_items: list[OneClickJob] = []
+        self.queue_lock = threading.Lock()
+        self.queue_worker: threading.Thread | None = None
+        self.job_seq = 0
+        # 右ペインUI
+        self.queue_tree: ttk.Treeview | None = None
+        self.running_label: tk.Label | None = None
     
     def run(self):
         self.root.mainloop()
@@ -337,22 +429,77 @@ class App:
         self.setup_menu()
     
     def setup_gui(self):
-        # GUIのレイアウト枠
-        self.frame = tk.Frame(self.root, padx=20, pady=20)
+        # 左右2ペイン
+        main = tk.Frame(self.root)
+        main.pack(fill="both", expand=True)
+
+        left = tk.Frame(main)
+        left.pack(side="left", fill="both", expand=True)
+
+        right = tk.Frame(main, width=360, padx=12, pady=12)
+        right.pack(side="right", fill="y")
+
+        # 上部URL入力（左）
+        self.frame = tk.Frame(left, padx=20, pady=20)
         self.frame.pack()
-        
         self.label = tk.Label(self.frame, text="YouTube動画URLを入力:")
         self.label.pack()
         self.entry = tk.Entry(self.frame, width=70)
         self.entry.pack(pady=5)
-        tk.Button(self.frame, text="🛰️ チャットを取得", command=lambda: threading.Thread(target=download_chat).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎬 動画を取得", command=lambda: threading.Thread(target=download_video).start()).pack(pady=5)
-        tk.Button(self.frame, text="📊 分析してグラフを表示", command=lambda: analyze_and_plot()).pack(pady=5)
-        tk.Button(self.frame, text="✂️ セグメント生成", command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（フォルダ）", command=lambda: threading.Thread(target=generate_clips_from_folder).start()).pack(pady=5)
-        tk.Button(self.frame, text="🎞️ Clip生成（ファイル）", command=lambda: threading.Thread(target=generate_clips_from_file).start()).pack(pady=5)
-        tk.Button(self.frame, text="セグメントに字幕&弾幕追加", command=lambda: threading.Thread(target=subtitle_and_danmaku_for_video_gui).start()).pack(pady=5)
-        tk.Button(self.frame, text="🖼️ サムネイル生成", command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5)
+
+        # タブ（左）
+        self.tabs = ttk.Notebook(left)
+        self.tabs.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # === 1ページ目：ワンボタン ===
+        self.page_quick = tk.Frame(self.tabs)
+        self.tabs.add(self.page_quick, text="クリップ生成（自動一括）")
+
+        tk.Button(
+            self.page_quick,
+            text="🚀 クリップ生成（ワンボタン）→ キュー登録",
+            font=("Noto Sans JP", 16, "bold"),
+            height=2,
+            command=enqueue_current_url   # ← one_click_pipeline から差し替え
+        ).pack(pady=12, fill="x")
+
+        # === 2ページ目：従来のボタン群 ===
+        self.page_detail = tk.Frame(self.tabs)
+        self.tabs.add(self.page_detail, text="詳細操作")
+
+        tk.Button(self.page_detail, text="🛰️ チャットを取得",
+                  command=lambda: threading.Thread(target=download_chat).start()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="🎬 動画を取得",
+                  command=lambda: threading.Thread(target=download_video).start()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="📊 分析してグラフを表示",
+                  command=lambda: analyze_and_plot()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="✂️ セグメント生成",
+                  command=lambda: threading.Thread(target=generate_segments).start()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="🎞️ Clip生成（フォルダ）",
+                  command=lambda: threading.Thread(target=generate_clips_from_folder).start()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="🎞️ Clip生成（ファイル）",
+                  command=lambda: threading.Thread(target=generate_clips_from_file).start()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="セグメントに字幕&弾幕追加",
+                  command=lambda: threading.Thread(target=subtitle_and_danmaku_for_video_gui).start()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="🖼️ サムネイル生成",
+                  command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5, fill="x")
+
+        # ---- 右ペイン：キューUI ----
+        tk.Label(right, text="ワンボタン処理キュー", font=("Noto Sans JP", 12, "bold")).pack(anchor="w")
+        self.running_label = tk.Label(right, text="実行中: なし", anchor="w")
+        self.running_label.pack(fill="x", pady=(4, 8))
+
+        cols = ("id", "title", "status")
+        self.queue_tree = ttk.Treeview(right, columns=cols, show="headings", height=18)
+        for c, w in (("id", 50), ("title", 220), ("status", 70)):
+            self.queue_tree.heading(c, text=c.upper())
+            self.queue_tree.column(c, width=w, anchor="w")
+        self.queue_tree.pack(fill="both", expand=True)
+
+        btns = tk.Frame(right)
+        btns.pack(fill="x", pady=8)
+        tk.Button(btns, text="選択削除", command=remove_selected_queue_items).pack(side="left")
+        tk.Button(btns, text="全クリア", command=clear_all_queue_items).pack(side="left", padx=6)
     
     def setup_menu(self):
         self.menubar = tk.Menu(self.root)
@@ -439,35 +586,18 @@ class App:
             pass
         print(msg, file=sys.__stderr__)  # ターミナルにも
     
-    # GUIにメッセージボックスを表示
+    # GUIにメッセージボックス表示
     def show_info_message(self, title, message):
+        if self.is_oneclick_mode: return
         self.root.after(0, lambda: messagebox.showinfo(title, message))
-    
-    # GUIにエラーメッセージボックスを表示
+    # GUIに警告メッセージボックス表示
+    def show_warning_message(self, title, message):
+        if self.is_oneclick_mode: return
+        self.root.after(0, lambda: messagebox.showwarning(title, message))
+    # GUIにエラーメッセージボックス表示
     def show_error_message(self, title, message):
+        if self.is_oneclick_mode: return
         self.root.after(0, lambda: messagebox.showerror(title, message))
-
-# クリップデータ
-@dataclass(slots=True)
-class Clip:
-    start_time: float
-    end_time: float
-
-# 配信データ
-@dataclass(slots=True)
-class StreamAnalysis:
-    video_url: str = ""
-    safe_title: str = ""
-    raw_title: str = ""
-    chat_file: str = ""
-    video_file: str = ""
-    x: List[int] = field(default_factory=list)
-    y: List[int] = field(default_factory=list)
-    x_labels: List[str] = field(default_factory=list)
-    valleys: List[int] = field(default_factory=list)
-    peaks: List[int] = field(default_factory=list)
-    audio_x: List[int] = field(default_factory=list)
-    audio_y: List[float] = field(default_factory=list)
 
 # 設定データ
 settings = {
@@ -550,6 +680,28 @@ def load_api_key_from_file() -> str:
     key_path =  RES_DIR_PATH / "openai_key.txt"
     with open(key_path, "r", encoding="utf-8") as f:
         return f.readline().strip()
+
+def conv_py_from_json(o):
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    return str(o)
+
+def conv_json_from_py(o):
+    if isinstance(o, dict):
+        return {k: conv_json_from_py(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple, set)):
+        return [conv_json_from_py(v) for v in o]
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    return o  # str, int, float, None, bool などはそのまま
 
 def group_segments_by_duration(
     segments: List[dict],
@@ -2011,26 +2163,28 @@ def extract_rms_numpy(wav_file):
 
 ##### クリップ #####
 def generate_clips_from_folder():
-        """
-        セグメント動画フォルダ指定してクリップ動画を生成する
-        """
-        global app
+    """
+    セグメント動画フォルダを自動参照してクリップ動画を生成する
+    """
+    global app
+    fileMgr = app.file_manager
 
-        segment_dir_path = filedialog.askdirectory(title="セグメントフォルダを選択")
-        if not segment_dir_path:
-            print("⚠️ セグメントフォルダが選択されませんでした。処理を中止します。")
-            return
-        
-        if update_paths_from_url() == False:
-            return
+    if update_paths_from_url() == False:
+        return
+
+    segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
     
-        def run():
-            print(f"📁 フォルダ選択でクリップ動画の生成を開始します・・・: {segment_dir_path}")
-            for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
-                generate_clips(segment_file_path)
-            app.show_info_message("完了", "フォルダ指定のクリップ動画生成が完了しました")
-    
-        threading.Thread(target=run).start()
+    if not segment_dir_path or not segment_dir_path.exists():
+        print("⚠️ セグメントフォルダが存在しません。先にセグメント生成をしてください。")
+        return
+
+    def run():
+        print(f"📁 自動選択フォルダからクリップ動画生成を開始します: {segment_dir_path}")
+        for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
+            generate_clips(segment_file_path)
+        app.show_info_message("完了", "クリップ動画生成が完了しました")
+
+    threading.Thread(target=run).start()
 
 def generate_clips_from_file():
     """
@@ -2111,21 +2265,39 @@ def generate_clips(segment_path: Path):
         print(f"❌ ファイル {segment_path.name} の処理に失敗しました: {e}")
     print("✅ クリップ動画生成が完了しました")
     
-def update_paths_from_url():
+def update_paths_from_url(preset_url: str | None = None,
+                          target_sa: StreamAnalysis | None = None) -> bool:
+    """
+    URL→各種パスを更新する。
+    - preset_url があればそれを最優先で使う（GUI入力欄は参照しない）
+    - target_sa があればそこを書き換える。無ければ app.stream_analysis を更新
+    - sa.locked が True の場合は sa.video_url を優先（ワンボタン・キュー用）
+    """
     global app
+    sa = target_sa or app.stream_analysis
 
-    url_input = app.entry.get().strip()
+    # どのURLを使うかの優先順位
+    if preset_url:
+        url_input = preset_url.strip()
+    elif getattr(sa, "locked", False) and sa.video_url:
+        url_input = sa.video_url
+    elif app.is_oneclick_mode and sa.video_url:
+        url_input = sa.video_url
+    else:
+        url_input = app.entry.get().strip()
+
     if not url_input:
         messagebox.showwarning("URL未入力", "YouTubeのURLを入力してください")
         return False
+
     normalized_url = normalize_youtube_url(url_input)
-    app.stream_analysis.video_url = normalized_url
+    sa.video_url = normalized_url
+
+    # タイトル取得（従来と同じ）
     try:
         result = subprocess.run(
-            [
-                str(YTDLP_PATH),
-                "--ffmpeg-location", str(LIB_DIR_PATH),
-                "--get-title", normalized_url],
+            [str(YTDLP_PATH), "--ffmpeg-location", str(LIB_DIR_PATH),
+             "--get-title", normalized_url],
             capture_output=True, text=True, encoding="cp932", errors="replace"
         )
         title = result.stdout.strip()
@@ -2135,30 +2307,60 @@ def update_paths_from_url():
             print("stderr:", result.stderr)
             print("args:", result.args)
             print("YTDLP_PATH exists:", os.path.exists(str(YTDLP_PATH)))
-            print(f"❌ yt-dlp失敗: {result.stderr}")
             app.show_error_message("エラー", "動画タイトルが取得できませんでした")
             return False
-    except FileNotFoundError as e:
-        print("yt-dlpが見つかりません:", e)
-    except PermissionError as e:
-        print("yt-dlpの実行権限がありません:", e)
     except Exception as e:
         print("yt-dlp実行中に想定外のエラー:", e)
-        traceback.print_exc()  # ← これでエラー詳細を標準出力に表示
+        traceback.print_exc()
         app.show_error_message("エラー", f"yt-dlp実行中に例外が発生しました:\n{e}")
         return False
-    app.stream_analysis.raw_title = title
-    #####パス指定でエラーを引き起こす文字は_に変換して使う#####
-    # 三点リーダーをアンダースコアに変換
+
+    sa.raw_title = title
+    # safe_title 整形（従来と同じ）
     title = title.replace("…", "_")
-    # 記号をアンダースコアに変換
-    app.stream_analysis.safe_title = re.sub(r'[\\/*?:"\'<>|#]', "", title)
-    print(f"safe_title: {app.stream_analysis.safe_title}")
-    output_dir = app.file_manager.output_dir_path(app.stream_analysis.safe_title)
+    sa.safe_title = re.sub(r'[\\/*?:"\'<>|#]', "", title)
+    print(f"safe_title: {sa.safe_title}")
+
+    # 出力パス（従来と同じ）
+    output_dir = app.file_manager.output_dir_path(sa.safe_title)
     output_dir.mkdir(parents=True, exist_ok=True)
-    app.stream_analysis.chat_file = str(output_dir / f"{app.stream_analysis.safe_title}_chat.json")
-    app.stream_analysis.video_file = str(output_dir / f"{app.stream_analysis.safe_title}_1920x1080.mp4")
+    sa.chat_file = str(output_dir / f"{sa.safe_title}_chat.json")
+    sa.video_file = str(output_dir / f"{sa.safe_title}_1920x1080.mp4")
     return True
+
+def one_click_pipeline():
+    """URL欄の動画に対して、全工程を順番に自動実行する"""
+    def run():
+        # URL → 各パス更新
+        if update_paths_from_url() == False:
+            return
+
+        print("🚀 クリップ生成（ワンボタン）パイプライン開始")
+
+        # ① チャット取得
+        download_chat()
+
+        # ② 動画取得
+        download_video()
+
+        # ③ 分析（スレッド完了を待つことで ④ が先行しないようにする）
+        t = analyze_and_plot(show_graph=False)
+        t.join()  # valleys/peaks 完了を待つ
+
+        # ④ セグメント生成（動画パスは StreamAnalysis に保持されている想定）
+        video_path = app.stream_analysis.video_file
+        if not video_path:
+            # 念のためURLから再設定を試みる
+            update_paths_from_url()
+            video_path = app.stream_analysis.video_file
+        generate_segments(video_path)
+
+        # ⑤ クリップ生成（フォルダ）— セグメントフォルダを自動参照します
+        generate_clips_from_folder()
+
+        app.show_info_message("完了", "『クリップ生成（ワンボタン）』の実行を開始しました。各工程の進捗はログに表示されます。")
+        print("✅ パイプラインのキックまで完了")
+    threading.Thread(target=run, daemon=True).start()
 
 def download_chat():
     global app
@@ -2166,6 +2368,7 @@ def download_chat():
     if not update_paths_from_url():
         return
     if os.path.exists(app.stream_analysis.chat_file):
+        print("チャットファイルは既に存在します。")
         app.show_info_message("情報", "チャットファイルは既に存在します。")
         return
     
@@ -2204,7 +2407,7 @@ def download_video():
     subprocess.run([
         str(YTDLP_PATH),
         "--force-overwrites",
-        "-f", "312+234/617+234/299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        "-f", "312+234/617+234/270+234/614+234/299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
         "--merge-output-format", "mp4",
         "-o", str(base_output),
         app.stream_analysis.video_url
@@ -2236,14 +2439,14 @@ def download_video():
     app.stream_analysis.video_file = str(final_output)
     app.show_info_message("完了", f"動画取得完了: {final_output.name}")
 
-def analyze_and_plot() -> threading.Thread:
+def analyze_and_plot(show_graph: bool = True) -> threading.Thread:
     global app
 
     def analyze():
         if not update_paths_from_url():
             return
         if not os.path.exists(app.stream_analysis.chat_file):
-            messagebox.showwarning("警告", "チャットファイルが存在しません。")
+            app.show_warning_message("警告", "チャットファイルが存在しません。")
             return
         
         # 🎥 分析する動画ファイルを選択
@@ -2300,7 +2503,9 @@ def analyze_and_plot() -> threading.Thread:
         app.stream_analysis.audio_y = rms_values
         print("動画音量(RMS)データを抽出終了")
         
-        app.root.after(0, draw_graph)
+        if show_graph:
+            app.root.after(0, draw_graph)
+        app.file_manager.save_analysis_results(app.stream_analysis)
     def draw_graph():
         print("グラフ表示開始・・・")
         plt.figure(figsize=(12, 5))
@@ -2334,37 +2539,37 @@ def analyze_and_plot() -> threading.Thread:
     t.start()
     return t  # スレッドオブジェクトを返す
 
-def generate_segments():
+def generate_segments(video_file: str | None = None):
     global app
     fileMgr = app.file_manager
     segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
-    
+
     if not app.stream_analysis.valleys or not app.stream_analysis.peaks:
         print("分析を行っていないのでセグメント生成を実行できませんでした。")
         return
 
-    video_file = filedialog.askopenfilename(
-        title="セグメント生成に使う動画ファイルを選択",
-        filetypes=[("MP4 Files", "*.mp4")]
-    )
-    if not video_file:
-        print("⚠️ 動画ファイルが選択されませんでした。処理を中止します。")
-        return
-    
+    # ★引数が無いときだけダイアログを出す（既存の動作）
+    if video_file is None:
+        video_file = filedialog.askopenfilename(
+            title="セグメント生成に使う動画ファイルを選択",
+            filetypes=[("MP4 Files", "*.mp4")]
+        )
+        if not video_file:
+            print("⚠️ 動画ファイルが選択されませんでした。処理を中止します。")
+            return
+
     print("セグメント生成開始・・・")
     segment_dir_path.mkdir(parents=True, exist_ok=True)
     BUFFER = 180
     segment_count = 1
     segment_meta = []
 
-    # ▼ valley-peakペアで各セグメント動画生成＋区間情報記録
+    # ▼ valley-peak ペアで各セグメント作成（既存ロジックそのまま）
     pairs = extract_valley_peak_pairs(app.stream_analysis.valleys, app.stream_analysis.peaks)
     for start_valley, peak in pairs:
         start = start_valley - BUFFER
-        # セグメントのスタート値がバッファ値以下だったら余白なしで行う
         if start <= 0:
-            start = start_valley   # 余白なしでvalleyから
-
+            start = start_valley
         end = peak + BUFFER
         duration = end - start
         segment_path = segment_dir_path / f"segment_{segment_count:02}.mp4"
@@ -2383,12 +2588,9 @@ def generate_segments():
         })
         segment_count += 1
 
-    # ▼ segment_info.json 保存
     with open(segment_dir_path / "segment_info.json", "w", encoding="utf-8") as f:
         json.dump(segment_meta, f, ensure_ascii=False, indent=2)
-    
-    print("セグメント生成終了・・・")
-    app.show_info_message("完了", f"セグメント生成が完了しました！\n保存先: {segment_dir_path}")
+    print("✅ セグメント生成が完了しました")
     
 def extract_valley_peak_pairs(valleys, peaks):
     # 時間順に並んだ山谷をまとめる
@@ -2752,6 +2954,121 @@ def generate_all_thumbnails_gui():
             print(f"❌ サムネイル生成失敗: segment{idx} {e}")
     app.show_info_message("完了", f"すべてのサムネイル画像を\noutput/thumbnail/\nに保存しました。")
 
+def enqueue_current_url():
+    global app
+    url = app.entry.get().strip()
+    if not url:
+        app.show_warning_message("URL未入力", "YouTubeのURLを入力してください")
+        return
+
+    # URLのみロックした StreamAnalysis
+    sa = StreamAnalysis(video_url=normalize_youtube_url(url), locked=True)
+
+    with app.queue_lock:
+        app.job_seq += 1
+        import copy
+        job = OneClickJob(
+            id=app.job_seq,
+            sa=sa,
+            settings_snapshot=copy.deepcopy(settings)
+        )
+        app.queue_items.append(job)
+        refresh_queue_ui_nolock()
+
+    start_queue_worker_if_needed()
+
+
+def refresh_queue_ui_nolock():
+    global app
+    if not app.queue_tree:
+        return
+    app.queue_tree.delete(*app.queue_tree.get_children())
+    for j in app.queue_items:
+        title = j.sa.safe_title or j.sa.video_url
+        app.queue_tree.insert("", "end", values=(j.id, title, j.status))
+    running = next((j for j in app.queue_items if j.status == "RUNNING"), None)
+    if app.running_label:
+        app.running_label.config(text=f"実行中: {running.sa.safe_title}" if running else "実行中: なし")
+
+
+def remove_selected_queue_items():
+    global app
+    if not app.queue_tree:
+        return
+    sel = app.queue_tree.selection()
+    if not sel:
+        return
+    ids_to_remove = {int(app.queue_tree.item(iid, "values")[0]) for iid in sel}
+    with app.queue_lock:
+        # 実行中は消さない
+        app.queue_items = [j for j in app.queue_items if j.id not in ids_to_remove or j.status == "RUNNING"]
+        refresh_queue_ui_nolock()
+
+
+def clear_all_queue_items():
+    global app
+    with app.queue_lock:
+        app.queue_items = [j for j in app.queue_items if j.status == "RUNNING"]
+        refresh_queue_ui_nolock()
+
+
+def start_queue_worker_if_needed():
+    global app
+    if app.queue_worker and app.queue_worker.is_alive():
+        return
+    app.queue_worker = threading.Thread(target=queue_worker_loop, daemon=True)
+    app.queue_worker.start()
+
+
+def queue_worker_loop():
+    global app, settings  # ← settings も明示
+    while True:
+        with app.queue_lock:
+            job = next((j for j in app.queue_items if j.status == "QUEUED"), None)
+            if not job:
+                break
+            job.status = "RUNNING"
+            refresh_queue_ui_nolock()
+
+        try:
+            app.is_oneclick_mode = True
+            app.stream_analysis = job.sa
+
+            # --- ここから：設定の中身をジョブのスナップショットに置換 ---
+            prev_settings = settings.copy()   # 現在の内容を退避（同一dictのまま）
+            settings.clear()
+            settings.update(job.settings_snapshot)
+            # --- ここまで：以降の処理は登録時の設定値で動く ---
+
+            # タイトルなど確定 & UI更新
+            update_paths_from_url(preset_url=job.sa.video_url, target_sa=job.sa)
+            with app.queue_lock:
+                refresh_queue_ui_nolock()
+
+            # ①チャット → ②動画 → ③分析(join) → ④セグメント → ⑤クリップ
+            download_chat()
+            download_video()
+            t = analyze_and_plot(show_graph=False)
+            t.join()
+            generate_segments(app.stream_analysis.video_file)
+            generate_clips_from_folder()
+
+            with app.queue_lock:
+                job.status = "DONE"
+                refresh_queue_ui_nolock()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            with app.queue_lock:
+                job.status = "ERROR"
+                refresh_queue_ui_nolock()
+        finally:
+            # --- 設定を元に戻す（同一dictの中身を復元）---
+            settings.clear()
+            settings.update(prev_settings)
+
+            app.is_oneclick_mode = False
+
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS
     global app
@@ -2786,13 +3103,15 @@ def main():
     
     # 設定情報読み込み
     fileMgr.load_file_settings(app.settings)
+    # 分析結果読み込み
+    fileMgr.load_analysis_results(app.stream_analysis)
     
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     
+    print(f"アプリケーション実行開始します")
     # アプリケーションの実行処理
     app.run()
-    print(f"アプリケーション実行開始します")
 
 if __name__ == "__main__":
     main()
