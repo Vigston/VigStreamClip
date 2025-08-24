@@ -302,7 +302,7 @@ class App:
                 stream_analysis.video_url = data.get("video_url", "")
 
                 print(f"✅ 分析結果を読み込みました: {def_in_file}")
-                
+
              # 🔹 URLを入力欄に反映
             if hasattr(app, "entry") and stream_analysis.video_url:
                 app.entry.delete(0, tk.END)
@@ -2086,26 +2086,28 @@ def extract_rms_numpy(wav_file):
 
 ##### クリップ #####
 def generate_clips_from_folder():
-        """
-        セグメント動画フォルダ指定してクリップ動画を生成する
-        """
-        global app
+    """
+    セグメント動画フォルダを自動参照してクリップ動画を生成する
+    """
+    global app
+    fileMgr = app.file_manager
 
-        segment_dir_path = filedialog.askdirectory(title="セグメントフォルダを選択")
-        if not segment_dir_path:
-            print("⚠️ セグメントフォルダが選択されませんでした。処理を中止します。")
-            return
-        
-        if update_paths_from_url() == False:
-            return
+    if update_paths_from_url() == False:
+        return
+
+    segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
     
-        def run():
-            print(f"📁 フォルダ選択でクリップ動画の生成を開始します・・・: {segment_dir_path}")
-            for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
-                generate_clips(segment_file_path)
-            app.show_info_message("完了", "フォルダ指定のクリップ動画生成が完了しました")
-    
-        threading.Thread(target=run).start()
+    if not segment_dir_path or not segment_dir_path.exists():
+        print("⚠️ セグメントフォルダが存在しません。先にセグメント生成をしてください。")
+        return
+
+    def run():
+        print(f"📁 自動選択フォルダからクリップ動画生成を開始します: {segment_dir_path}")
+        for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
+            generate_clips(segment_file_path)
+        app.show_info_message("完了", "クリップ動画生成が完了しました")
+
+    threading.Thread(target=run).start()
 
 def generate_clips_from_file():
     """
