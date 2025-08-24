@@ -281,6 +281,57 @@ class App:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=2)
             print(f"✅ ファイルごとの設定を保存しました: {path}")
+        
+        def load_analysis_results(self, stream_analysis):
+            def_output_dir = BASE_DIR_PATH / "output"
+            def_in_file = def_output_dir / "analysis.json"
+
+            # デフォルトの分析結果があれば読み込む
+            if def_in_file.exists():
+                with open(def_in_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                stream_analysis.x = data.get("x", [])
+                stream_analysis.y = data.get("y", [])
+                stream_analysis.x_labels = data.get("x_labels", [])
+                stream_analysis.valleys = data.get("valleys", [])
+                stream_analysis.peaks = data.get("peaks", [])
+                stream_analysis.audio_x = np.array(data.get("audio_x", []))
+                stream_analysis.audio_y = data.get("audio_y", [])
+                stream_analysis.raw_title = data.get("raw_title", "")
+                stream_analysis.safe_title = data.get("safe_title", "")
+                stream_analysis.video_url = data.get("video_url", "")
+
+                print(f"✅ 分析結果を読み込みました: {def_in_file}")
+                
+             # 🔹 URLを入力欄に反映
+            if hasattr(app, "entry") and stream_analysis.video_url:
+                app.entry.delete(0, tk.END)
+                app.entry.insert(0, stream_analysis.video_url)
+                
+
+        def save_analysis_results(self, stream_analysis):
+            def_output_dir = BASE_DIR_PATH / "output"
+            def_out_file = def_output_dir / "analysis.json"
+
+            output_dir = self.output_dir_path(stream_analysis.safe_title)
+            out_file = output_dir / "analysis.json"
+            data = {
+                "x": stream_analysis.x,
+                "y": stream_analysis.y,
+                "x_labels": stream_analysis.x_labels,
+                "valleys": stream_analysis.valleys,
+                "peaks": stream_analysis.peaks,
+                "audio_x": list(stream_analysis.audio_x),
+                "audio_y": list(stream_analysis.audio_y),
+                "raw_title": stream_analysis.raw_title,
+                "safe_title": stream_analysis.safe_title,
+                "video_url": stream_analysis.video_url,
+            }
+            with open(def_out_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=conv_json_from_py)
+            with open(out_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=conv_json_from_py)
+            print(f"✅ 分析結果を保存しました: {def_out_file, out_file}")
     
     class StdoutRedirector:
         def __init__(self, text_widget):
@@ -439,11 +490,13 @@ class App:
             pass
         print(msg, file=sys.__stderr__)  # ターミナルにも
     
-    # GUIにメッセージボックスを表示
+    # GUIにメッセージボックス表示
     def show_info_message(self, title, message):
         self.root.after(0, lambda: messagebox.showinfo(title, message))
-    
-    # GUIにエラーメッセージボックスを表示
+    # GUIに警告メッセージボックス表示
+    def show_warning_message(self, title, message):
+        self.root.after(0, lambda: messagebox.showwarning(title, message))
+    # GUIにエラーメッセージボックス表示
     def show_error_message(self, title, message):
         self.root.after(0, lambda: messagebox.showerror(title, message))
 
@@ -550,6 +603,28 @@ def load_api_key_from_file() -> str:
     key_path =  RES_DIR_PATH / "openai_key.txt"
     with open(key_path, "r", encoding="utf-8") as f:
         return f.readline().strip()
+
+def conv_py_from_json(o):
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    return str(o)
+
+def conv_json_from_py(o):
+    if isinstance(o, dict):
+        return {k: conv_json_from_py(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple, set)):
+        return [conv_json_from_py(v) for v in o]
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    return o  # str, int, float, None, bool などはそのまま
 
 def group_segments_by_duration(
     segments: List[dict],
@@ -2204,7 +2279,7 @@ def download_video():
     subprocess.run([
         str(YTDLP_PATH),
         "--force-overwrites",
-        "-f", "312+234/617+234/299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        "-f", "312+234/617+234/270+234/614+234/299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
         "--merge-output-format", "mp4",
         "-o", str(base_output),
         app.stream_analysis.video_url
@@ -2243,7 +2318,7 @@ def analyze_and_plot() -> threading.Thread:
         if not update_paths_from_url():
             return
         if not os.path.exists(app.stream_analysis.chat_file):
-            messagebox.showwarning("警告", "チャットファイルが存在しません。")
+            app.show_warning_message("警告", "チャットファイルが存在しません。")
             return
         
         # 🎥 分析する動画ファイルを選択
@@ -2301,6 +2376,7 @@ def analyze_and_plot() -> threading.Thread:
         print("動画音量(RMS)データを抽出終了")
         
         app.root.after(0, draw_graph)
+        app.file_manager.save_analysis_results(app.stream_analysis)
     def draw_graph():
         print("グラフ表示開始・・・")
         plt.figure(figsize=(12, 5))
@@ -2786,13 +2862,15 @@ def main():
     
     # 設定情報読み込み
     fileMgr.load_file_settings(app.settings)
+    # 分析結果読み込み
+    fileMgr.load_analysis_results(app.stream_analysis)
     
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     
+    print(f"アプリケーション実行開始します")
     # アプリケーションの実行処理
     app.run()
-    print(f"アプリケーション実行開始します")
 
 if __name__ == "__main__":
     main()
