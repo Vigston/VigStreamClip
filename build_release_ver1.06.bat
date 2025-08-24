@@ -6,13 +6,13 @@ rmdir /S /Q dist
 rmdir /S /Q build
 rmdir /S /Q __pycache__
 
-REM === VigStreamClip を build/release/VigStreamClip_ver1.05 にビルド ===
+REM === VigStreamClip を build/release/VigStreamClip_ver1.06 にビルド ===
 
 echo pyinstaller最新版をインストールします...
 pip install --upgrade pyinstaller
 
 REM 設定
-SET VER=ver1.05
+SET VER=ver1.06
 SET NAME=VigStreamClip
 SET DIST=build\release\%NAME%_%VER%
 SET BUILD=build\release
