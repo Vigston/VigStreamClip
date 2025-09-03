@@ -32,6 +32,7 @@ from chat_downloader import ChatDownloader
 from io import BytesIO
 import urllib.request
 import queue
+import time
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -204,14 +205,16 @@ class StreamAnalysis:
 @dataclass(slots=True)
 class OneClickJob:
     id: int
-    sa: StreamAnalysis
-    settings_snapshot: dict  # ← 追加：登録時の設定スナップショット
-    status: str = "QUEUED"   # QUEUED / RUNNING / DONE / ERROR
+    sa: StreamAnalysis              # URL等ロック用
+    settings_snapshot: dict         # ← 追加：登録時の設定スナップショット
+    project_dir: str | None = None  # ← 追加：登録時に開いていたプロジェクトの絶対パス
+    status: str = "QUEUED"          # QUEUED / RUNNING / DONE / ERROR
 
 # アプリデータ
 class App:
     class FileManager:
-        def __init__(self, base_dir):
+        def __init__(self, app: "App", base_dir: "Path"):
+            self.app = app
             self.base_dir = Path(base_dir)
             self.files_dir = self.base_dir / "projects"
             self.files_dir.mkdir(exist_ok=True)
@@ -260,39 +263,47 @@ class App:
         @property
         def font_dir_path(self):
             path: Path = None
-            if not self._project_file_path:
+            if self.app.current_job is not None:
+                path = Path(self.app.current_job.project_dir) / "fonts"
+            elif not self._project_file_path:
                 path = BASE_DIR_PATH / "fonts"
             else:
                 path = self._project_file_path / "fonts"
-            path.mkdir(exist_ok=True)
             return path
 
         def segment_dir_path(self, title_name):
-            if title_name == "":
-                return
+            # ✨ title_name が空なら即エラー（None を返さない）
+            if not title_name:
+                raise RuntimeError("title_name が未確定です。update_paths_from_url() を先に実行してください。")
             
             path: Path = None
-            if not self._project_file_path:
+            if self.app.current_job is not None:
+                path = Path(self.app.current_job.project_dir) / "output" / title_name / "segments"
+            elif not self._project_file_path:
                 path = BASE_DIR_PATH / "output" / title_name / "segments"
             else:
                 path = self._project_file_path / "output" / title_name / "segments"
-                
-            if not path is None:
-                path.mkdir(parents=True, exist_ok=True)
             return path
 
         def output_dir_path(self, title_name):
+            # ✨ title_name が空なら即エラー（None を返さない）
+            if not title_name:
+                raise RuntimeError("title_name が未確定です。update_paths_from_url() を先に実行してください。")
+            
             path: Path = None
-            if not self._project_file_path:
+            if self.app.current_job is not None:
+                path = Path(self.app.current_job.project_dir) / "output" / title_name
+            elif not self._project_file_path:
                 path = BASE_DIR_PATH / "output" / title_name
             else:
                 path = self._project_file_path / "output" / title_name
-            path.mkdir(parents=True, exist_ok=True)
             return path
 
         @property
         def settings_file_path(self):
-            if not self._project_file_path:
+            if self.app.current_job is not None:
+                path = Path(self.app.current_job.project_dir) / "res" / "settings.txt"
+            elif not self._project_file_path:
                 path = BASE_DIR_PATH / "res" / "settings.txt"
             else:
                 path = self._project_file_path / "res" / "settings.txt"
@@ -341,12 +352,9 @@ class App:
                 app.entry.insert(0, stream_analysis.video_url)
                 
 
+        # App.FileManager 内
         def save_analysis_results(self, stream_analysis):
-            def_output_dir = BASE_DIR_PATH / "output"
-            def_out_file = def_output_dir / "analysis.json"
-
-            output_dir = self.output_dir_path(stream_analysis.safe_title)
-            out_file = output_dir / "analysis.json"
+            # 既存のdata構築はそのまま
             data = {
                 "x": stream_analysis.x,
                 "y": stream_analysis.y,
@@ -359,11 +367,32 @@ class App:
                 "safe_title": stream_analysis.safe_title,
                 "video_url": stream_analysis.video_url,
             }
+
+            # ① 共通のデフォルト保存（従来通り）
+            def_output_dir = BASE_DIR_PATH / "output"
+            def_output_dir.mkdir(parents=True, exist_ok=True)
+            def_out_file = def_output_dir / "analysis.json"
             with open(def_out_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2, default=conv_json_from_py)
+
+            # ② “ジョブの出力ルート”へも保存（video_file を錨にする）
+            job_root = None
+            try:
+                if stream_analysis.video_file:
+                    job_root = Path(stream_analysis.video_file).parent
+            except Exception:
+                job_root = None
+
+            # video_file がまだ無い場合は従来ロジックにフォールバック
+            if job_root is None:
+                job_root = (self.project_file_path or BASE_DIR_PATH) / "output" / stream_analysis.safe_title
+
+            job_root.mkdir(parents=True, exist_ok=True)
+            out_file = job_root / "analysis.json"
             with open(out_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2, default=conv_json_from_py)
-            print(f"✅ 分析結果を保存しました: {def_out_file, out_file}")
+
+            print(f"✅ 分析結果を保存しました: {(def_out_file, out_file)}")
     
     class StdoutRedirector:
         def __init__(self, text_widget):
@@ -401,7 +430,7 @@ class App:
         self.label: tk.Label = None
         self.entry: tk.Entry = None
         self.stream_analysis: StreamAnalysis = StreamAnalysis()
-        self.file_manager = self.FileManager(BASE_DIR_PATH)
+        self.file_manager = self.FileManager(self, BASE_DIR_PATH)
         self._project_file_path_name = None  # UI選択中ファイル名
         self.settings = settings  # 各ファイルごとの設定をこのdictに切り替え保存する
         self.is_oneclick_mode = False
@@ -413,6 +442,8 @@ class App:
         # 右ペインUI
         self.queue_tree: ttk.Treeview | None = None
         self.running_label: tk.Label | None = None
+        # 実行中ジョブ
+        self.current_job: OneClickJob | None = None
     
     def run(self):
         self.root.mainloop()
@@ -2161,32 +2192,107 @@ def extract_rms_numpy(wav_file):
         rms_values.append(rms_db)
     return rms_values
 
-##### クリップ #####
-def generate_clips_from_folder():
+def wait_for_segments_ready(timeout_sec: int = 600, poll_sec: float = 0.5) -> bool:
     """
-    セグメント動画フォルダを自動参照してクリップ動画を生成する
+    segment_info.json が存在し、JSONが読めて、列挙された segment_*.mp4 が
+    すべて存在し、かつファイルサイズが安定するまで待つ。
+    （tmp などは使わず、現行の書き出し方法のままで“出来上がり”を判断）
     """
     global app
     fileMgr = app.file_manager
+    segdir = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
+    if not segdir:
+        print("❌ セグメントフォルダが未確定（safe_title 未設定の可能性）")
+        return False
+
+    info_path = segdir / "segment_info.json"
+    t0 = time.time()
+    last_sizes = None
+    stable_hits = 0          # 連続してサイズが同じ回数
+    need_stable_hits = 2     # 2回連続で同じ＝安定とみなす
+
+    while time.time() - t0 < timeout_sec:
+        if not info_path.exists():
+            time.sleep(poll_sec)
+            continue
+
+        # 書きかけ等で読めない瞬間はスルー
+        try:
+            with open(info_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception:
+            time.sleep(poll_sec)
+            continue
+
+        # 期待形式か確認
+        if not isinstance(meta, list) or not meta:
+            time.sleep(poll_sec)
+            continue
+
+        files = []
+        ok = True
+        for m in meta:
+            fn = m.get("file")
+            if not fn:
+                ok = False
+                break
+            p = segdir / fn
+            files.append(p)
+            if not p.exists():
+                ok = False
+                break
+        if not ok:
+            time.sleep(poll_sec)
+            continue
+
+        # サイズ安定チェック
+        sizes = tuple((str(p), p.stat().st_size) for p in files)
+        if sizes == last_sizes:
+            stable_hits += 1
+        else:
+            stable_hits = 0
+            last_sizes = sizes
+
+        if stable_hits >= need_stable_hits:
+            return True
+
+        time.sleep(poll_sec)
+
+    print("⏰ セグメント出来上がり待ちでタイムアウトしました")
+    return False
+
+##### クリップ #####
+def generate_clips_from_folder(*, run_in_thread: bool = True):
+    """
+    セグメント動画フォルダを自動参照してクリップ動画を生成する
+    run_in_thread=True: GUIからの手動ボタン時などにバックグラウンド実行
+    run_in_thread=False: ワーカー内での同期実行（逐次処理保証）
+    """
+    global app
 
     if update_paths_from_url() == False:
         return
 
+    fileMgr = app.file_manager
     segment_dir_path = fileMgr.segment_dir_path(app.stream_analysis.safe_title)
     
     if not segment_dir_path or not segment_dir_path.exists():
         print("⚠️ セグメントフォルダが存在しません。先にセグメント生成をしてください。")
         return
 
-    def run():
+    def _run():
         print(f"📁 自動選択フォルダからクリップ動画生成を開始します: {segment_dir_path}")
         for segment_file_path in Path(segment_dir_path).glob("segment_*.mp4"):
             generate_clips(segment_file_path)
         app.show_info_message("完了", "クリップ動画生成が完了しました")
 
-    threading.Thread(target=run).start()
+    # ワンボタン/キューワーカー中は同期実行（並列禁止）
+    if app.is_oneclick_mode or not run_in_thread:
+        _run()
+    else:
+        threading.Thread(target=_run).start()
 
-def generate_clips_from_file():
+def generate_clips_from_file(*, run_in_thread: bool = True):
     """
     セグメント動画ファイル指定してクリップ動画を生成する
     """
@@ -2199,11 +2305,16 @@ def generate_clips_from_file():
     if update_paths_from_url() == False:
         return
     
-    def run():
+    def _run():
         print(f"🎬 ファイル選択でクリップ動画の生成を開始します・・・: {segment_file_path}")
         generate_clips(Path(segment_file_path))
         app.show_info_message("完了", "ファイル指定のクリップ動画生成が完了しました")
-    threading.Thread(target=run).start()
+
+    # ワンボタン/キューワーカー中は同期実行（並列禁止）
+    if app.is_oneclick_mode or not run_in_thread:
+        _run()
+    else:
+        threading.Thread(target=_run).start()
     
 def generate_clips(segment_path: Path):
     """
@@ -2265,16 +2376,18 @@ def generate_clips(segment_path: Path):
         print(f"❌ ファイル {segment_path.name} の処理に失敗しました: {e}")
     print("✅ クリップ動画生成が完了しました")
     
-def update_paths_from_url(preset_url: str | None = None,
-                          target_sa: StreamAnalysis | None = None) -> bool:
+def update_paths_from_url() -> bool:
     """
     URL→各種パスを更新する。
     - preset_url があればそれを最優先で使う（GUI入力欄は参照しない）
     - target_sa があればそこを書き換える。無ければ app.stream_analysis を更新
-    - sa.locked が True の場合は sa.video_url を優先（ワンボタン・キュー用）
+    - sa.locked の有無に関係なく、safe_title 決定後は必ず
+      output/<safe_title>/... をベースに矯正する
     """
     global app
-    sa = target_sa or app.stream_analysis
+    sa = app.stream_analysis
+    preset_url: str = None
+         
 
     # どのURLを使うかの優先順位
     if preset_url:
@@ -2293,11 +2406,19 @@ def update_paths_from_url(preset_url: str | None = None,
     normalized_url = normalize_youtube_url(url_input)
     sa.video_url = normalized_url
 
-    # タイトル取得（従来と同じ）
+    # タイトル取得
     try:
+        cookie_path = RES_DIR_PATH / "cookies.txt"
+
+        cmd = [
+            str(YTDLP_PATH),
+            "--ffmpeg-location", str(LIB_DIR_PATH),
+            "--cookies",         str(cookie_path),
+            "--get-title",       normalized_url,
+        ]
+        
         result = subprocess.run(
-            [str(YTDLP_PATH), "--ffmpeg-location", str(LIB_DIR_PATH),
-             "--get-title", normalized_url],
+            cmd,
             capture_output=True, text=True, encoding="cp932", errors="replace"
         )
         title = result.stdout.strip()
@@ -2315,17 +2436,24 @@ def update_paths_from_url(preset_url: str | None = None,
         app.show_error_message("エラー", f"yt-dlp実行中に例外が発生しました:\n{e}")
         return False
 
+    # safe_title 確定
     sa.raw_title = title
-    # safe_title 整形（従来と同じ）
     title = title.replace("…", "_")
     sa.safe_title = re.sub(r'[\\/*?:"\'<>|#]', "", title)
     print(f"safe_title: {sa.safe_title}")
 
-    # 出力パス（従来と同じ）
-    output_dir = app.file_manager.output_dir_path(sa.safe_title)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    sa.chat_file = str(output_dir / f"{sa.safe_title}_chat.json")
-    sa.video_file = str(output_dir / f"{sa.safe_title}_1920x1080.mp4")
+    # 以降は必ず output/<safe_title> をベースにする（locked でも矯正）
+    base = app.file_manager.output_dir_path(sa.safe_title)  # 従来のUI動作
+    base.mkdir(parents=True, exist_ok=True)
+
+    # chat_file は毎回ベースから再計算
+    sa.chat_file = str(base / f"{sa.safe_title}_chat.json")
+
+    # video_file：親が base と違う/未設定なら必ず矯正（locked でも上書き）
+    expected_video = base / f"{sa.safe_title}_1920x1080.mp4"
+    if (not sa.video_file) or (Path(sa.video_file).parent != base):
+        sa.video_file = str(expected_video)
+
     return True
 
 def one_click_pipeline():
@@ -2347,16 +2475,39 @@ def one_click_pipeline():
         t = analyze_and_plot(show_graph=False)
         t.join()  # valleys/peaks 完了を待つ
 
-        # ④ セグメント生成（動画パスは StreamAnalysis に保持されている想定）
-        video_path = app.stream_analysis.video_file
-        if not video_path:
-            # 念のためURLから再設定を試みる
-            update_paths_from_url()
-            video_path = app.stream_analysis.video_file
-        generate_segments(video_path)
+        # ④ セグメント生成（設定解像度のファイル名を優先）
+        sa = app.stream_analysis
+
+        video_path = sa.video_file
+        #if not video_path:
+        #    # 念のためURLから再設定を試みる
+        #    update_paths_from_url()
+        #   video_path = app.stream_analysis.video_file
+
+        # 設定解像度（例: "1920x1080"）から期待ファイル名を組み立て
+        res = str(settings.get("Resolution", "1920x1080")).lower()
+        try:
+            w, h = map(int, res.split("x"))
+        except Exception:
+            w, h = 1920, 1080  # 不正値は1080pにフォールバック
+
+        # ベースディレクトリ（既存video_pathの親 or 作品ごとの出力先）
+        base_dir = Path(video_path).parent if video_path else app.file_manager.output_dir_path(sa.safe_title)
+        expected = base_dir / f"{sa.safe_title}_{w}x{h}.mp4"
+
+        # 実在する最適なパスを選択
+        if expected.exists():
+            chosen = expected
+        elif video_path and Path(video_path).exists():
+            chosen = Path(video_path)
+        else:
+            fallback_1080 = base_dir / f"{sa.safe_title}_1920x1080.mp4"
+            chosen = fallback_1080 if fallback_1080.exists() else expected  # 最後の手段としてexpected名
+
+        generate_segments(str(chosen))
 
         # ⑤ クリップ生成（フォルダ）— セグメントフォルダを自動参照します
-        generate_clips_from_folder()
+        generate_clips_from_folder(run_in_thread=False)
 
         app.show_info_message("完了", "『クリップ生成（ワンボタン）』の実行を開始しました。各工程の進捗はログに表示されます。")
         print("✅ パイプラインのキックまで完了")
@@ -2393,8 +2544,9 @@ def download_video():
 
     if not update_paths_from_url():
         return
+    fileMgr = app.file_manager
     base_name = app.stream_analysis.safe_title
-    save_dir = app.file_manager.output_dir_path(base_name)
+    save_dir = fileMgr.output_dir_path(base_name)
     print("動画ダウンロード開始・・・")
     # 🔸 ユーザー設定解像度
     resolution = settings.get("Resolution")
@@ -2410,6 +2562,7 @@ def download_video():
         "-f", "312+234/617+234/270+234/614+234/299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
         "--merge-output-format", "mp4",
         "-o", str(base_output),
+        "--cookies", str(RES_DIR_PATH / "cookies.txt"),
         app.stream_analysis.video_url
     ], check=True)
     print(f"✅ 動画(1920x1080)をダウンロード完了: {base_output.name}")
@@ -2961,16 +3114,19 @@ def enqueue_current_url():
         app.show_warning_message("URL未入力", "YouTubeのURLを入力してください")
         return
 
-    # URLのみロックした StreamAnalysis
     sa = StreamAnalysis(video_url=normalize_youtube_url(url), locked=True)
 
     with app.queue_lock:
         app.job_seq += 1
-        import copy
+        # いま開いているプロジェクトの絶対パス（未選択なら None）
+        proj = app.file_manager.project_file_path
+        proj_abs = str(proj.resolve()) if proj else None
+
         job = OneClickJob(
             id=app.job_seq,
             sa=sa,
-            settings_snapshot=copy.deepcopy(settings)
+            settings_snapshot=copy.deepcopy(settings),
+            project_dir=proj_abs          # ← ここで固定
         )
         app.queue_items.append(job)
         refresh_queue_ui_nolock()
@@ -3021,7 +3177,7 @@ def start_queue_worker_if_needed():
 
 
 def queue_worker_loop():
-    global app, settings  # ← settings も明示
+    global app, settings
     while True:
         with app.queue_lock:
             job = next((j for j in app.queue_items if j.status == "QUEUED"), None)
@@ -3030,18 +3186,20 @@ def queue_worker_loop():
             job.status = "RUNNING"
             refresh_queue_ui_nolock()
 
+        prev_settings = None
+        prev_project_path = None
         try:
+            app.current_job = job   # 実行中ジョブをアプリに登録
             app.is_oneclick_mode = True
             app.stream_analysis = job.sa
 
-            # --- ここから：設定の中身をジョブのスナップショットに置換 ---
-            prev_settings = settings.copy()   # 現在の内容を退避（同一dictのまま）
+            # --- 設定を登録時スナップショットで上書き ---
+            prev_settings = settings.copy()
             settings.clear()
             settings.update(job.settings_snapshot)
-            # --- ここまで：以降の処理は登録時の設定値で動く ---
 
-            # タイトルなど確定 & UI更新
-            update_paths_from_url(preset_url=job.sa.video_url, target_sa=job.sa)
+            # タイトル/各種パス確定（ジョブのURLで）
+            update_paths_from_url()
             with app.queue_lock:
                 refresh_queue_ui_nolock()
 
@@ -3051,23 +3209,31 @@ def queue_worker_loop():
             t = analyze_and_plot(show_graph=False)
             t.join()
             generate_segments(app.stream_analysis.video_file)
+            
+            # セグメント生成が終わるまで待機
+            wait_for_segments_ready()
+            
             generate_clips_from_folder()
 
             with app.queue_lock:
                 job.status = "DONE"
                 refresh_queue_ui_nolock()
+
         except Exception:
-            import traceback
-            traceback.print_exc()
+            import traceback; traceback.print_exc()
             with app.queue_lock:
                 job.status = "ERROR"
                 refresh_queue_ui_nolock()
         finally:
-            # --- 設定を元に戻す（同一dictの中身を復元）---
-            settings.clear()
-            settings.update(prev_settings)
-
+            # 設定を復元
+            if prev_settings is not None:
+                settings.clear()
+                settings.update(prev_settings)
+            # プロジェクトの参照を復元
+            if prev_project_path is not None:
+                app.file_manager._project_file_path = prev_project_path
             app.is_oneclick_mode = False
+            app.current_job = None # アプリからジョブを削除
 
 def main():
     global CUSTOM_FONT_PATHS, AVAILABLE_FONTS

@@ -6,13 +6,13 @@ rmdir /S /Q dist
 rmdir /S /Q build
 rmdir /S /Q __pycache__
 
-REM === VigStreamClip を build/release/VigStreamClip_ver1.06 にビルド ===
+REM === VigStreamClip を build/release/VigStreamClip_ver2.00 にビルド ===
 
 echo pyinstaller最新版をインストールします...
 pip install --upgrade pyinstaller
 
 REM 設定
-SET VER=ver1.06
+SET VER=ver2.00
 SET NAME=VigStreamClip
 SET DIST=build\release\%NAME%_%VER%
 SET BUILD=build\release
@@ -39,14 +39,26 @@ pyinstaller ^
   --add-data "%FORMATS_JSON%;chat_downloader/formatting" ^
   "%SCRIPT%"
 
-REM リソースフォルダを出力先にコピー（上書きあり）
-xcopy /E /I /Y fonts %DIST%\fonts
-xcopy /E /I /Y models %DIST%\models
-xcopy /E /I /Y libs %DIST%\libs
-xcopy /E /I /Y res %DIST%\res
+REM リソースフォルダを出力先にコピー（上書きあり、cookies.txtは除外）
+REM 注意: robocopy の終了コード 0～7 は成功扱い
+REM /E: サブフォルダ含む（空も）
+REM /MT:16: 並列コピー（CPU/ディスクに合わせて調整可）
+REM /NFL /NDL /NJH /NJS /NP: ログ簡略化（お好みで
+echo フォントをコピー中...
+robocopy "fonts" "%DIST%\fonts" /E /MT:16 /NFL /NDL /NJH /NJS /NP
+if %ERRORLEVEL% GEQ 8 exit /b %ERRORLEVEL%
 
-REM openai_key.txt を空で出力先に作成
-echo. > %DIST%\res\openai_key.txt
+echo モデルをコピー中...
+robocopy "models" "%DIST%\models" /E /MT:16 /NFL /NDL /NJH /NJS /NP
+if %ERRORLEVEL% GEQ 8 exit /b %ERRORLEVEL%
+
+echo ライブラリをコピー中...
+robocopy "libs" "%DIST%\libs" /E /MT:16 /NFL /NDL /NJH /NJS /NP
+if %ERRORLEVEL% GEQ 8 exit /b %ERRORLEVEL%
+
+echo リソースをコピー中（cookies.txt は除外）...
+robocopy "res" "%DIST%\res" /E /MT:16 /XF cookies.txt /NFL /NDL /NJH /NJS /NP
+if %ERRORLEVEL% GEQ 8 exit /b %ERRORLEVEL%
 
 echo.
 echo ✅ ビルド完了！出力: %DIST%\%NAME%\%NAME%.exe
