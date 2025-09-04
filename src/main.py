@@ -512,6 +512,8 @@ class App:
                   command=lambda: threading.Thread(target=generate_clips_from_file).start()).pack(pady=5, fill="x")
         tk.Button(self.page_detail, text="セグメントに字幕&弾幕追加",
                   command=lambda: threading.Thread(target=subtitle_and_danmaku_for_video_gui).start()).pack(pady=5, fill="x")
+        tk.Button(self.page_detail, text="💬 弾幕追加（フル動画）",
+                  command=add_danmaku_full_video_gui).pack(pady=5, fill="x")
         tk.Button(self.page_detail, text="🖼️ サムネイル生成",
                   command=lambda: threading.Thread(target=generate_all_thumbnails_gui).start()).pack(pady=5, fill="x")
 
@@ -2800,6 +2802,101 @@ def subtitle_and_danmaku_for_video_gui():
     except Exception as e:
         traceback.print_exc()
         app.show_error_message("エラー", f"字幕＆弾幕の追加に失敗しました:\n{e}")
+        
+def add_danmaku_full_video_gui():
+    """
+    フル動画に chat.json のコメントを流す弾幕動画を生成（字幕は焼かない）。
+    入力ダイアログ（ファイル選択/オフセット入力）はメインスレッドで行い、
+    その後の重い処理（PNG生成/overlay）はワーカースレッドで実行する。
+    出力: <元動画名>_danmaku.mp4（元動画と同じフォルダ）
+    """
+    global app
+
+    # --- ① ここはメインスレッドで実行：入力ダイアログ ---
+    vfile = filedialog.askopenfilename(
+        parent=app.root,
+        title="弾幕を焼き付けるフル動画を選択",
+        filetypes=[("動画ファイル","*.mp4;*.mkv;*.mov;*.m4v;*.webm;*.avi"), ("すべてのファイル","*.*")]
+    )
+    if not vfile:
+        print("⚠️ 動画が選択されませんでした。処理を中止します。")
+        return
+    video_path = Path(vfile)
+
+    jfile = filedialog.askopenfilename(
+        parent=app.root,
+        title="chat.json を選択",
+        filetypes=[("JSONファイル","*.json"), ("すべてのファイル","*.*")]
+    )
+    if not jfile:
+        print("⚠️ chat.json が選択されませんでした。処理を中止します。")
+        return
+    chat_json_path = Path(jfile)
+
+    off_text = simpledialog.askstring(
+        "開始オフセット（任意）",
+        "この動画が配信全体の中で開始する“絶対秒”を入力してください。\n"
+        "（例）12345。未入力なら0として処理します。",
+        parent=app.root
+    )
+    try:
+        offset_sec = float(off_text.strip()) if (off_text and off_text.strip()) else 0.0
+    except Exception:
+        offset_sec = 0.0
+
+    # --- ② 重い処理はワーカースレッドで ---
+    def worker():
+        try:
+            dur = get_video_duration_seconds(video_path)
+            abs_start = offset_sec
+            abs_end   = offset_sec + dur
+
+            comments = extract_comments_for_clip(chat_json_path, abs_start, abs_end)
+            print(f"💬 対象コメント件数: {len(comments)}（範囲: {abs_start}〜{abs_end} 秒）")
+            if not comments:
+                app.show_warning_message(
+                    "コメントなし",
+                    "指定範囲にコメントが見つかりませんでした。\nオフセット秒が合っているかをご確認ください。"
+                )
+                return
+
+            video_resolution = get_video_resolution(video_path)
+            w, h = map(int, video_resolution.split("x"))
+            font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
+            fps = 30
+
+            work_dir = video_path.parent / (video_path.stem + "_danmaku_frames")
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+            print("🖼️ 弾幕PNG連番 生成中・・・")
+            generate_comment_to_png_sequence(
+                comments=comments,
+                video_size=(w, h),
+                out_frames_dir=work_dir,
+                start_time=abs_start,
+                end_time=abs_end,
+                fps=fps,
+                duration_per_comment=settings.get("DanmakuDuration"),
+                font_path=font_path
+            )
+
+            out_path = video_path.with_name(video_path.stem + "_danmaku.mp4")
+            print("🎛️ 動画と弾幕PNGの overlay 合成中・・・")
+            combine_video_with_danmaku_overlay(
+                clip_path=video_path,
+                frames_dir=work_dir,
+                out_path=out_path,
+                fps=fps
+            )
+
+            print(f"✅ 完了: {out_path}")
+            app.show_info_message("完了", f"弾幕動画を出力しました。\n{out_path}")
+
+        except Exception as e:
+            traceback.print_exc()
+            app.show_error_message("エラー", f"弾幕追加に失敗しました:\n{e}")
+
+    threading.Thread(target=worker, daemon=True).start()
 
 def apply_subtitle_and_danmaku_to_video(video_path: Path):
     """
