@@ -33,6 +33,7 @@ from io import BytesIO
 import urllib.request
 import queue
 import time
+import math
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -1234,6 +1235,33 @@ def draw_comment_with_emotes(
             img.alpha_composite(icon, (int(cursor_x), int(paste_y)))
             cursor_x += emote_size
 
+def _render_sprite(parts, emotes, font, fill, show_shadow, shadow_color, emote_size):
+    """
+    1コメントぶんを『完成品の横長RGBA画像』にプリレンダーし、Imageを返す。
+    """
+    # 幅を実測
+    width = measure_rich_width(parts, font, emote_size)
+    if width <= 0:
+        width = 1  # Pillow要件: 幅0は不可
+    try:
+        ascent, descent = font.getmetrics()
+        height = ascent + descent
+        if height <= 0:
+            height = max(font.size, 1)
+    except Exception:
+        height = max(font.size, 1)
+
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    # x=0, y=0 から描画（影込み）
+    draw_comment_with_emotes(
+        img=canvas, x=0, y=0,
+        parts=parts, emotes=emotes or [],
+        font=font, fill=fill,
+        show_shadow=show_shadow, shadow_color=shadow_color,
+        emote_size=emote_size
+    )
+    return canvas
+
 # --- 差し替え: emotes対応の弾幕フレーム生成 ---
 def generate_comment_to_png_sequence(
     comments,
@@ -1245,14 +1273,27 @@ def generate_comment_to_png_sequence(
     duration_per_comment=None,
     font_path=None
 ):
+    """
+    【互換維持】従来はPNG連番を書き出していたが、
+    ここでは『描画計画（plan）』を JSON に保存するだけに変更。
+    実際の描画とffmpegへのストリーミングは combine_video_with_danmaku_overlay() が行う。
+
+    保存先: out_frames_dir / 'overlay_plan.json'
+    """
     if not settings.get("DanmakuEnabled"):
-        print("⚠️ 弾幕が無効化されているためスキップします")
+        # 無効時も空の plan を出しておく（後段が素通しコピーできるように）
+        out_frames_dir = Path(out_frames_dir)
+        out_frames_dir.mkdir(parents=True, exist_ok=True)
+        plan_path = out_frames_dir / "overlay_plan.json"
+        with open(plan_path, "w", encoding="utf-8") as f:
+            json.dump({"items": [], "meta": {}}, f, ensure_ascii=False)
         return
 
-    frame_count = int((end_time - start_time) * fps)
     W, H = video_size
+    out_frames_dir = Path(out_frames_dir)
+    out_frames_dir.mkdir(parents=True, exist_ok=True)
 
-    # スタイル設定の読み込み
+    # スタイル
     font_size = settings.get("DanmakuFontSize")
     color_str = aarrggbb_to_rgba(settings.get("DanmakuColour"))
     show_shadow = settings.get("DanmakuShadow")
@@ -1260,58 +1301,67 @@ def generate_comment_to_png_sequence(
     track_count = settings.get("DanmakuTrackCount")
     duration = duration_per_comment or settings.get("DanmakuDuration")
     speed_factor = settings.get("DanmakuSpeed")
-
-    # 推奨：絵文字のサイズはフォントサイズに少し余裕を持たせる
     emote_size = int(round(font_size * 1.1))
 
-    font = ImageFont.truetype(font_path or "arial.ttf", font_size)
+    # JSONに保存できる形の「parts」へ（テキスト/エモートの列）
+    # y座標は従来どおりの単純ラウンドロビン
     track_height = H // (track_count + 2)
-    tracks = [track_height * (i+1) for i in range(track_count)]
+    tracks = [track_height * (i + 1) for i in range(track_count)]
 
-    # 事前にトークン化＆幅を計算しておく
-    danmaku = []
+    # ここでは幅も計算しておく（のちの座標算出に必要）
+    # フォント情報は combine 側でも必要なので meta にも残す
+    # font_pathはここでは未使用（実描画は combine 側）だが、互換のため保存
+    plan_items = []
     for i, c in enumerate(comments):
-        t0 = float(c.get("time_in_seconds", -1)) - start_time
+        try:
+            t0 = float(c.get("time_in_seconds", -1)) - start_time
+        except Exception:
+            continue
         if not (0 <= t0 < (end_time - start_time)):
             continue
-        y = tracks[i % track_count]
         message = c.get("message", "")
-        emotes = c.get("emotes") or []  # 無ければ空配列
+        emotes = c.get("emotes") or []
         parts = tokenize_rich_message(message, emotes)
-        msg_width = measure_rich_width(parts, font, emote_size)
-        danmaku.append({
-            "parts": parts,
-            "emotes": emotes,
-            "start": t0,
-            "y": y,
-            "width": msg_width
+        # 幅は combine 側でも算出できるが、計算二度手間を避けるためここで保存
+        # （ただしフォントが変わると幅がズレるので、metaとセットで扱う）
+        # 幅見積り用に仮フォント（pathが無い環境用フォールバックも含む）
+        try:
+            font_tmp = ImageFont.truetype(font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or "arial.ttf", font_size)
+            msg_width = measure_rich_width(parts, font_tmp, emote_size)
+        except Exception:
+            # 幅は無くても致命ではない（combine側で再計算）
+            msg_width = None
+
+        plan_items.append({
+            "parts": parts,            # [{"type":"text","value":...}|{"type":"emote","name":...}, ...]
+            "emotes": emotes,          # 元のemote辞書列（URL等を含む）
+            "start": t0,               # 区間相対秒
+            "duration": float(duration),
+            "y": tracks[i % track_count],
+            "width_hint": msg_width,   # ヒント（無い場合はNone）
         })
 
-    out_frames_dir = Path(out_frames_dir)
-    out_frames_dir.mkdir(parents=True, exist_ok=True)
+    plan = {
+        "meta": {
+            "W": W, "H": H,
+            "fps": fps,
+            "colour": color_str,
+            "shadow": show_shadow,
+            "shadow_colour": shadow_color,
+            "font_size": font_size,
+            "font_name": settings.get("DanmakuFont"),
+            "font_path": font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or None,
+            "emote_size": emote_size,
+            "speed": speed_factor,
+            "abs_start": float(start_time),
+            "abs_end": float(end_time),
+        },
+        "items": plan_items
+    }
 
-    for f in range(frame_count):
-        t = f / fps
-        img = Image.new("RGBA", (W, H), (0,0,0,0))
-
-        for d in danmaku:
-            appear = d["start"]
-            if appear <= t < appear + duration:
-                # メッセージ全体の横幅を使用してスクロール距離を計算
-                w_all = d["width"]
-                progress = (t - appear) / duration
-                x = int(W - (W + w_all) * progress * speed_factor)
-                y = d["y"]
-
-                draw_comment_with_emotes(
-                    img=img, x=x, y=y,
-                    parts=d["parts"], emotes=d["emotes"],
-                    font=font, fill=color_str,
-                    show_shadow=show_shadow, shadow_color=shadow_color,
-                    emote_size=emote_size
-                )
-
-        img.save(str(out_frames_dir / f"danmaku_{f:04d}.png"))
+    plan_path = out_frames_dir / "overlay_plan.json"
+    with open(plan_path, "w", encoding="utf-8") as f:
+        json.dump(plan, f, ensure_ascii=False, indent=2)
 
 def combine_video_with_danmaku_overlay(
     clip_path: Path,
@@ -1319,19 +1369,137 @@ def combine_video_with_danmaku_overlay(
     out_path: Path,
     fps: int = 30
 ):
-    # frames_dir 内に danmaku_%04d.png
-    frames_pattern = str(frames_dir / "danmaku_%04d.png")
-    cmd = [
+    """
+    【互換維持】frames_dir 内の 'overlay_plan.json' を読み込み、
+    プリレンダーしたスプライトを『毎フレーム座標だけ更新して貼る』方式で
+    透明レイヤーを rawvideo で ffmpeg にパイプ → 元動画と overlay → 出力する。
+
+    ※ 旧仕様のPNG連番は不要。planが無い/空なら動画をそのままコピー。
+    """
+    frames_dir = Path(frames_dir)
+    plan_path = frames_dir / "overlay_plan.json"
+    if not plan_path.exists():
+        # 旧互換：計画が無ければ素通しコピー
+        subprocess.run([
+            str(FFMPEG_PATH), "-y",
+            "-i", str(clip_path),
+            "-c", "copy",
+            str(out_path)
+        ], check=True)
+        return
+
+    with open(plan_path, "r", encoding="utf-8") as f:
+        plan = json.load(f)
+
+    items = plan.get("items") or []
+    meta = plan.get("meta") or {}
+    if len(items) == 0:
+        # コメント無し → 素通しコピー
+        subprocess.run([
+            str(FFMPEG_PATH), "-y",
+            "-i", str(clip_path),
+            "-c:v", "h264_nvenc", "-c:a", "copy",
+            str(out_path)
+        ], check=True)
+        return
+
+    W = int(meta.get("W", 1080))
+    H = int(meta.get("H", 1920))
+    fps = int(meta.get("fps", fps))
+    fill = tuple(meta.get("colour", (255,255,255,255)))
+    show_shadow = bool(meta.get("shadow", False))
+    shadow_color = tuple(meta.get("shadow_colour", (0,0,0,255)))
+    font_size = int(meta.get("font_size", 36))
+    font_name = meta.get("font_name") or settings.get("DanmakuFont")
+    font_path = meta.get("font_path") or CUSTOM_FONT_PATHS.get(font_name) or "arial.ttf"
+    emote_size = int(meta.get("emote_size", max(1, round(font_size*1.1))))
+    speed = float(meta.get("speed", 1.0))
+    abs_start = float(meta.get("abs_start", 0.0))
+    abs_end = float(meta.get("abs_end", 0.0))
+    total_sec = max(0.0, abs_end - abs_start)
+    frame_count = int(math.ceil(total_sec * fps))
+
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except Exception:
+        font = ImageFont.truetype("arial.ttf", font_size)
+
+    # ---- スプライトをプリレンダー（各コメント1回だけ） ----
+    sprites = []
+    for it in items:
+        parts = it.get("parts") or []
+        emotes = it.get("emotes") or []
+        start_rel = float(it.get("start", 0.0))
+        dur = float(it.get("duration", 3.0))
+        y = int(it.get("y", 0))
+
+        sprite_img = _render_sprite(
+            parts=parts, emotes=emotes,
+            font=font, fill=fill,
+            show_shadow=show_shadow, shadow_color=shadow_color,
+            emote_size=emote_size
+        )
+        sprites.append({
+            "img": sprite_img,
+            "y": y,
+            "start": start_rel,          # 区間相対秒
+            "end": start_rel + dur,
+            "width": sprite_img.width,
+            "speed": speed
+        })
+
+    # ---- イベント駆動のアクティブ集合（O(F×K)） ----
+    sprites_by_start = sorted(sprites, key=lambda s: s["start"])
+    sprites_by_end = sorted(sprites, key=lambda s: s["end"])
+    i_start = 0
+    i_end = 0
+    active = []
+
+    # ---- ffmpeg を起動（stdin=PIPEで rawvideo を渡す）----
+    proc = subprocess.Popen([
         str(FFMPEG_PATH), "-y",
         "-i", str(clip_path),
-        "-framerate", str(fps),
-        "-i", frames_pattern,
+        "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{W}x{H}", "-r", str(fps), "-i", "pipe:0",
         "-filter_complex", "[0:v][1:v]overlay=shortest=1:format=auto",
-        "-c:v", "h264_nvenc",
-        "-c:a", "copy",
+        "-c:v", "h264_nvenc", "-c:a", "copy",
         str(out_path)
-    ]
-    subprocess.run(cmd, check=True)
+    ], stdin=subprocess.PIPE)
+
+    try:
+        for f in range(frame_count):
+            t = f / fps  # 区間相対秒
+
+            # 追加
+            while i_start < len(sprites_by_start) and sprites_by_start[i_start]["start"] <= t:
+                active.append(sprites_by_start[i_start])
+                i_start += 1
+            # 除去
+            while i_end < len(sprites_by_end) and sprites_by_end[i_end]["end"] <= t:
+                try:
+                    active.remove(sprites_by_end[i_end])
+                except ValueError:
+                    pass
+                i_end += 1
+
+            frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            for s in active:
+                # 表示区間外はスキップ
+                if not (s["start"] <= t <= s["end"]):
+                    continue
+                progress = (t - s["start"]) / (s["end"] - s["start"] + 1e-9)
+                # 右の外から左の外へスクロール（従来式）
+                x = int(W - (W + s["width"]) * progress * s["speed"])
+                frame.alpha_composite(s["img"], (x, s["y"]))
+
+            # PNG保存はしない。RGBA生データをそのままffmpegへ。
+            proc.stdin.write(frame.tobytes())
+
+    finally:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        proc.wait()
 
 def extract_comments_for_clip(chat_json_path, start_time, end_time):
     with open(chat_json_path, "r", encoding="utf-8") as f:
