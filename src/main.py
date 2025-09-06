@@ -34,6 +34,17 @@ import urllib.request
 import queue
 import time
 import math
+import shutil
+
+# GPUプレビュー（OpenGL）
+try:
+    from pyopengltk import OpenGLFrame
+    from OpenGL.GL import *
+    from OpenGL.GLU import *
+    from OpenGL.error import GLError
+    GPU_PREVIEW_AVAILABLE = True
+except Exception:
+    GPU_PREVIEW_AVAILABLE = False
 
 # 基本ディレクトリ取得
 def get_base_dir():
@@ -572,7 +583,7 @@ class App:
         preview_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="プレビュー", menu=preview_menu)
         preview_menu.add_command(label="色コード", command=lambda: open_color_code_preview())
-        
+        preview_menu.add_command(label="弾幕プレビュー(GPU)", command=lambda: threading.Thread(target=preview_danmaku_as_temp_video, daemon=True).start())
     
     def setup_logging_area(self):
         # ログ用ウィジェット作成
@@ -669,6 +680,8 @@ settings = {
     "DanmakuTrackCount": 6,              # 弾幕の表示レーン数
     "DanmakuDuration": 3.0,               # 弾幕1つの表示時間（秒）
     "DanmakuSpeed": 1.0,                  # 弾幕スクロール速度係数（1.0が標準）
+    "DanmakuOutline": 2,                 # 外枠の太さ(px) 0で無効
+    "DanmakuOutlineColour": "FF000000",  # 外枠色 AARRGGBB
 
     # Clip関連（クリップ長・無音閾値）
     "MinClipLength": 30,                  # クリップの最小長さ（秒）
@@ -1205,11 +1218,12 @@ def draw_comment_with_emotes(
     fill,
     show_shadow: bool,
     shadow_color,
-    emote_size: int
+    emote_size: int,
+    outline_width: int = 0,
+    outline_color = (0, 0, 0, 255),
 ):
     draw = ImageDraw.Draw(img)
     cursor_x = x
-
     emote_map = {e["name"]: e for e in (emotes or []) if "name" in e}
 
     try:
@@ -1218,24 +1232,49 @@ def draw_comment_with_emotes(
         ascent, descent = 0, 0
     baseline = y + ascent
 
+    def _draw_text(xx, yy, text):
+        # 影（任意）
+        if show_shadow:
+            draw.text((xx + 0.5, yy + 0.5), text, font=font, fill=shadow_color)
+
+        # Pillowのstroke対応があればそれを使う
+        try:
+            if outline_width > 0:
+                draw.text(
+                    (xx, yy), text, font=font, fill=fill,
+                    stroke_width=int(outline_width),
+                    stroke_fill=outline_color
+                )
+            else:
+                draw.text((xx, yy), text, font=font, fill=fill)
+            return
+        except TypeError:
+            # 古いPillow向けフォールバック：8方向にアウトラインを手描き
+            if outline_width > 0:
+                offs = range(-outline_width, outline_width + 1)
+                for ox in offs:
+                    for oy in offs:
+                        if ox == 0 and oy == 0: 
+                            continue
+                        draw.text((xx + ox, yy + oy), text, font=font, fill=outline_color)
+            draw.text((xx, yy), text, font=font, fill=fill)
+
     for p in parts:
         if p["type"] == "text" and p["value"]:
-            if show_shadow:
-                draw.text((cursor_x+0.5, y+0.5), p["value"], font=font, fill=shadow_color)
-            draw.text((cursor_x, y), p["value"], font=font, fill=fill)
-            w = draw.textbbox((0,0), p["value"], font=font)
+            _draw_text(cursor_x, y, p["value"])
+            w = draw.textbbox((0, 0), p["value"], font=font)
             cursor_x += (w[2] - w[0])
+
         elif p["type"] == "emote":
             e = emote_map.get(p["name"])
             if not e:
                 continue
-            #print(f"[EmoteDraw] '{p['name']}' を画像に差し替え")
             icon = get_emote_image(e, emote_size)
             paste_y = baseline - emote_size
             img.alpha_composite(icon, (int(cursor_x), int(paste_y)))
             cursor_x += emote_size
 
-def _render_sprite(parts, emotes, font, fill, show_shadow, shadow_color, emote_size):
+def _render_sprite(parts, emotes, font, fill, show_shadow, shadow_color, emote_size, outline_width, outline_color):
     """
     1コメントぶんを『完成品の横長RGBA画像』にプリレンダーし、Imageを返す。
     """
@@ -1258,7 +1297,8 @@ def _render_sprite(parts, emotes, font, fill, show_shadow, shadow_color, emote_s
         parts=parts, emotes=emotes or [],
         font=font, fill=fill,
         show_shadow=show_shadow, shadow_color=shadow_color,
-        emote_size=emote_size
+        emote_size=emote_size,
+        outline_width=outline_width, outline_color=outline_color
     )
     return canvas
 
@@ -1301,6 +1341,8 @@ def generate_comment_to_png_sequence(
     track_count = settings.get("DanmakuTrackCount")
     duration = duration_per_comment or settings.get("DanmakuDuration")
     speed_factor = settings.get("DanmakuSpeed")
+    outline_w = int(settings.get("DanmakuOutline", 0))
+    outline_color = aarrggbb_to_rgba(settings.get("DanmakuOutlineColour", "FF000000"))
     emote_size = int(round(font_size * 1.1))
 
     # JSONに保存できる形の「parts」へ（テキスト/エモートの列）
@@ -1369,24 +1411,8 @@ def combine_video_with_danmaku_overlay(
     out_path: Path,
     fps: int = 30
 ):
-    """
-    【互換維持】frames_dir 内の 'overlay_plan.json' を読み込み、
-    プリレンダーしたスプライトを『毎フレーム座標だけ更新して貼る』方式で
-    透明レイヤーを rawvideo で ffmpeg にパイプ → 元動画と overlay → 出力する。
-
-    ※ 旧仕様のPNG連番は不要。planが無い/空なら動画をそのままコピー。
-    """
     frames_dir = Path(frames_dir)
     plan_path = frames_dir / "overlay_plan.json"
-    if not plan_path.exists():
-        # 旧互換：計画が無ければ素通しコピー
-        subprocess.run([
-            str(FFMPEG_PATH), "-y",
-            "-i", str(clip_path),
-            "-c", "copy",
-            str(out_path)
-        ], check=True)
-        return
 
     with open(plan_path, "r", encoding="utf-8") as f:
         plan = json.load(f)
@@ -1394,7 +1420,6 @@ def combine_video_with_danmaku_overlay(
     items = plan.get("items") or []
     meta = plan.get("meta") or {}
     if len(items) == 0:
-        # コメント無し → 素通しコピー
         subprocess.run([
             str(FFMPEG_PATH), "-y",
             "-i", str(clip_path),
@@ -1413,7 +1438,11 @@ def combine_video_with_danmaku_overlay(
     font_name = meta.get("font_name") or settings.get("DanmakuFont")
     font_path = meta.get("font_path") or CUSTOM_FONT_PATHS.get(font_name) or "arial.ttf"
     emote_size = int(meta.get("emote_size", max(1, round(font_size*1.1))))
+    # speed は「表示時間を縮める／伸ばす」ためだけに使う
     speed = float(meta.get("speed", 1.0))
+    if not math.isfinite(speed) or speed <= 0:
+        speed = 1.0
+
     abs_start = float(meta.get("abs_start", 0.0))
     abs_end = float(meta.get("abs_end", 0.0))
     total_sec = max(0.0, abs_end - abs_start)
@@ -1424,38 +1453,44 @@ def combine_video_with_danmaku_overlay(
     except Exception:
         font = ImageFont.truetype("arial.ttf", font_size)
 
-    # ---- スプライトをプリレンダー（各コメント1回だけ） ----
+    # ---- スプライトをプリレンダー ----
     sprites = []
     for it in items:
         parts = it.get("parts") or []
         emotes = it.get("emotes") or []
         start_rel = float(it.get("start", 0.0))
-        dur = float(it.get("duration", 3.0))
+        base_dur = float(it.get("duration", 3.0))  # 設定上の基準表示時間
         y = int(it.get("y", 0))
 
         sprite_img = _render_sprite(
             parts=parts, emotes=emotes,
             font=font, fill=fill,
             show_shadow=show_shadow, shadow_color=shadow_color,
-            emote_size=emote_size
+            emote_size=emote_size,
+            outline_width=int(settings.get("DanmakuOutline", 0)),
+            outline_color=aarrggbb_to_rgba(settings.get("DanmakuOutlineColour", "FF000000"))
         )
+
+        # 速度は「表示時間」を 1/speed 倍にする
+        # → 線形補間の progress は 0→1 になり、end 到達で x==-width（完全に抜け切り）
+        effective_dur = base_dur / speed
+        end_rel = start_rel + max(1e-6, effective_dur)
+
         sprites.append({
             "img": sprite_img,
             "y": y,
-            "start": start_rel,          # 区間相対秒
-            "end": start_rel + dur,
+            "start": start_rel,
+            "end": end_rel,
             "width": sprite_img.width,
-            "speed": speed
+            # "speed": speed  # 移動式では使わないので保持しなくてOK
         })
 
-    # ---- イベント駆動のアクティブ集合（O(F×K)） ----
     sprites_by_start = sorted(sprites, key=lambda s: s["start"])
     sprites_by_end = sorted(sprites, key=lambda s: s["end"])
     i_start = 0
     i_end = 0
     active = []
 
-    # ---- ffmpeg を起動（stdin=PIPEで rawvideo を渡す）----
     proc = subprocess.Popen([
         str(FFMPEG_PATH), "-y",
         "-i", str(clip_path),
@@ -1467,13 +1502,11 @@ def combine_video_with_danmaku_overlay(
 
     try:
         for f in range(frame_count):
-            t = f / fps  # 区間相対秒
+            t = f / fps
 
-            # 追加
             while i_start < len(sprites_by_start) and sprites_by_start[i_start]["start"] <= t:
                 active.append(sprites_by_start[i_start])
                 i_start += 1
-            # 除去
             while i_end < len(sprites_by_end) and sprites_by_end[i_end]["end"] <= t:
                 try:
                     active.remove(sprites_by_end[i_end])
@@ -1483,17 +1516,17 @@ def combine_video_with_danmaku_overlay(
 
             frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             for s in active:
-                # 表示区間外はスキップ
                 if not (s["start"] <= t <= s["end"]):
                     continue
+                # 速度は end-start に反映済み。位置は純粋な 0→1 線形。
                 progress = (t - s["start"]) / (s["end"] - s["start"] + 1e-9)
-                # 右の外から左の外へスクロール（従来式）
-                x = int(W - (W + s["width"]) * progress * s["speed"])
-                frame.alpha_composite(s["img"], (x, s["y"]))
+                x = int(W - (W + s["width"]) * progress)
 
-            # PNG保存はしない。RGBA生データをそのままffmpegへ。
+                # 画面に見えているときだけ貼る（任意の最適化）
+                if x < W and (x + s["width"]) > 0:
+                    frame.alpha_composite(s["img"], (x, s["y"]))
+
             proc.stdin.write(frame.tobytes())
-
     finally:
         try:
             proc.stdin.close()
@@ -2017,6 +2050,8 @@ def open_danmaku_style_window():
     add_entry("表示時間（秒）", "DanmakuDuration", float)
     add_entry("表示レーン数", "DanmakuTrackCount", int)
     add_entry("スクロール速度", "DanmakuSpeed", float)
+    add_entry("外枠の太さ(px)", "DanmakuOutline", int)
+    add_entry("外枠の色(AARRGGBB)", "DanmakuOutlineColour", str)
 
     shadow_var = BooleanVar(value=settings.get("DanmakuShadow"))
     Checkbutton(win, text="影を付ける", variable=shadow_var).pack(pady=5)
@@ -2291,6 +2326,153 @@ def open_color_code_preview():
         dlg.clipboard_append(code_label["text"].split()[-1])
 
     Button(dlg, text="色コードをコピー", command=copy_to_clipboard).pack(pady=8)
+
+def open_in_default_viewer(path: Path):
+    """OS既定のプレイヤーでファイルを開く"""
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception as e:
+        print(f"⚠️ 自動再生に失敗しました: {e}")
+
+def attach_cleanup_on_window_close(win: tk.Toplevel, targets: list[Path]):
+    """
+    Toplevel が閉じられたタイミングで targets（ファイル/フォルダ）を削除。
+    """
+    targets = [Path(t) for t in (targets or [])]
+    _done = {"v": False}
+
+    def _cleanup():
+        if _done["v"]:
+            return
+        _done["v"] = True
+        for t in targets:
+            try:
+                if t.is_dir():
+                    shutil.rmtree(t, ignore_errors=True)
+                else:
+                    t.unlink(missing_ok=True)
+                print(f"🧹 削除: {t}")
+            except Exception as e:
+                print(f"⚠️ 削除失敗: {t} ({e})")
+
+    def _on_close():
+        try:
+            win.destroy()
+        finally:
+            # ちょい待ち（ハンドル解放・描画解放のため）
+            app.root.after(150, _cleanup)
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
+    win.bind("<Destroy>", lambda e: app.root.after(150, _cleanup))
+
+def preview_danmaku_as_temp_video(duration: float = 8.0, fps: int = 30):
+    """
+    8秒の無地動画に弾幕を重ねてプレビュー。
+    ・まず “弾幕ウィンドウ(Toplevel)” を作る（←ここにクリーンアップひも付け）
+    ・重い生成処理は別スレッド
+    ・生成完了後、外部プレイヤーで再生ボタン
+    ・ウィンドウを閉じたら一時フォルダごと削除
+    """
+    global app, settings, CUSTOM_FONT_PATHS
+
+    # ---- 弾幕ウィンドウ（メインスレッドで作成）----
+    win = tk.Toplevel(app.root)
+    win.title("弾幕プレビュー")
+    win.geometry("420x160")
+
+    status_var = tk.StringVar(value="準備中…")
+    ttk.Label(win, textvariable=status_var).pack(anchor="w", padx=12, pady=(12, 6))
+
+    btn_frame = ttk.Frame(win)
+    btn_frame.pack(fill="x", padx=12, pady=8)
+
+    play_btn = ttk.Button(btn_frame, text="再生", state="disabled")
+    play_btn.pack(side="left")
+
+    ttk.Button(btn_frame, text="閉じる", command=win.destroy).pack(side="right")
+
+    # 一時作業フォルダ（毎回ユニーク）
+    work_root = Path(tempfile.mkdtemp(prefix="danmaku_preview-"))
+    frames_dir = work_root / "frames"
+    base_clip  = work_root / "base.mp4"
+    out_path   = work_root / "danmaku_preview.mp4"
+
+    # ← このウィンドウが “弾幕ウィンドウ”。閉じたら work_root ごと消す
+    attach_cleanup_on_window_close(win, [work_root])
+
+    def worker():
+        try:
+            # 1) 解像度・背景色
+            res = str(settings.get("Resolution", "1080x1920")).lower()
+            try:
+                W, H = map(int, res.split("x"))
+            except Exception:
+                W, H = 1080, 1920
+            bgColor = aarrggbb_to_ffmpeg_color(settings.get("BackgroundColour", "FF000000"))
+
+            # 2) サンプルコメント生成
+            words = ["おはよう", "テストです", "さようなら", "ありがとう"]
+            comments, t, i = [], 0.5, 0
+            while t < duration - 0.2:
+                comments.append({"time_in_seconds": t, "message": words[i % len(words)], "emotes": []})
+                t += 0.5; i += 1
+
+            # 3) plan(JSON)作成
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
+            generate_comment_to_png_sequence(
+                comments=comments,
+                video_size=(W, H),
+                out_frames_dir=frames_dir,
+                start_time=0.0,
+                end_time=float(duration),
+                fps=fps,
+                duration_per_comment=settings.get("DanmakuDuration"),
+                font_path=font_path
+            )
+
+            # 4) ベース動画生成（NVENC → 失敗時 libx264）
+            cmd_nvenc = [
+                str(FFMPEG_PATH), "-y",
+                "-f", "lavfi", "-i", f"color=c={bgColor}:s={W}x{H}:r={fps}:d={duration}",
+                "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+                str(base_clip)
+            ]
+            ret = subprocess.run(cmd_nvenc, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if ret.returncode != 0:
+                cmd_x264 = [
+                    str(FFMPEG_PATH), "-y",
+                    "-f", "lavfi", "-i", f"color=c={bgColor}:s={W}x{H}:r={fps}:d={duration}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    str(base_clip)
+                ]
+                subprocess.run(cmd_x264, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # 5) 弾幕オーバーレイ合成
+            combine_video_with_danmaku_overlay(
+                clip_path=base_clip,
+                frames_dir=frames_dir,
+                out_path=out_path,
+                fps=fps
+            )
+
+            def on_ready():
+                status_var.set(f"完了: {out_path}")
+                play_btn.config(state="normal", command=lambda: open_in_default_viewer(out_path))
+            app.root.after(0, on_ready)
+
+        except Exception as e:
+            def on_err():
+                status_var.set(f"エラー: {e}")
+            app.root.after(0, on_err)
+
+    # 重い処理は別スレッド
+    threading.Thread(target=worker, daemon=True).start()
 
 # 字幕生成のフィルター設定を生成
 def generate_subtitle_filter(srt_path: Path) -> str:
