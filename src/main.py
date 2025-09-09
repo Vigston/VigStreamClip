@@ -647,49 +647,50 @@ class App:
 # 設定データ
 settings = {
     # 解像度などの一般設定
-    "Resolution": "1080x1920",            # 出力動画の解像度（横x縦）
+    "Resolution": "1080x1920",          # 出力動画の解像度（横x縦）
 
     # 字幕スタイル
-    "Font": "Noto Sans JP",               # 字幕に使用するフォント名
-    "FontSize": 24,                       # 字幕のフォントサイズ（pt）
-    "PrimaryColour": "FF000000",          # 字幕文字色（AARRGGBB形式）
-    "Outline": 0.8,                       # 字幕の縁取りの太さ（px）
-    "OutlineColour": "FFFFFFFF",          # 縁取りの色（AARRGGBB形式）
-    "Shadow": 1.0,                        # 影の太さ（px）
-    "MarginV": 80,                        # 字幕の下マージン（px）
-    "Alignment": 2,                       # 字幕位置（1〜9, ASS形式の配置コード）1=左下 2=中央下 3=右下 4=左中央 5=中央中央 6=右中央 7=左上 8=中央上 9=右上
+    "Font": "Noto Sans JP",             # 字幕に使用するフォント名
+    "FontSize": 24,                     # 字幕のフォントサイズ（pt）
+    "PrimaryColour": "FF000000",        # 字幕文字色（AARRGGBB形式）
+    "Outline": 0.8,                     # 字幕の縁取りの太さ（px）
+    "OutlineColour": "FFFFFFFF",        # 縁取りの色（AARRGGBB形式）
+    "Shadow": 1.0,                      # 影の太さ（px）
+    "MarginV": 80,                      # 字幕の下マージン（px）
+    "Alignment": 2,                     # 字幕位置（1〜9, ASS形式の配置コード）1=左下 2=中央下 3=右下 4=左中央 5=中央中央 6=右中央 7=左上 8=中央上 9=右上
 
     # タイトルスタイル
-    "TitleFont": "Noto Sans JP",          # サムネイルタイトルのフォント名
-    "TitleFontSize": 120,                 # タイトルのフォントサイズ（pt）
-    "TitleAreaX": 0,                      # タイトル描画エリアの左上X座標（px）
-    "TitleAreaY": 0,                      # タイトル描画エリアの左上Y座標（px）
-    "TitleAreaWidth": 800,                # タイトル描画エリアの幅（px）
-    "TitleAreaHeight": 200,               # タイトル描画エリアの高さ（px）
-    "TitleAlignV": "top",                 # タイトルの縦位置（top, center, bottom）
-    "TitleAlignH": "center",              # タイトルの横位置（left, center, right）
-    "ThumbnailTitle": "",                 # サムネイル用タイトル文字列（空文字なら元動画タイトルを使用）
+    "TitleFont": "Noto Sans JP",        # サムネイルタイトルのフォント名
+    "TitleFontSize": 120,               # タイトルのフォントサイズ（pt）
+    "TitleAreaX": 0,                    # タイトル描画エリアの左上X座標（px）
+    "TitleAreaY": 0,                    # タイトル描画エリアの左上Y座標（px）
+    "TitleAreaWidth": 800,              # タイトル描画エリアの幅（px）
+    "TitleAreaHeight": 200,             # タイトル描画エリアの高さ（px）
+    "TitleAlignV": "top",               # タイトルの縦位置（top, center, bottom）
+    "TitleAlignH": "center",            # タイトルの横位置（left, center, right）
+    "ThumbnailTitle": "",               # サムネイル用タイトル文字列（空文字なら元動画タイトルを使用）
 
     # 弾幕スタイル
-    "DanmakuEnabled": True,               # 弾幕表示の有効/無効
-    "DanmakuFont": "Noto Sans JP",        # 弾幕に使用するフォント名
-    "DanmakuFontSize": 36,                # 弾幕フォントサイズ（pt）
-    "DanmakuColour": "FFFFFFFF",          # 弾幕文字色（AARRGGBB形式）
-    "DanmakuShadow": False,               # 弾幕に影を付けるか
-    "DanmakuShadowColour": "FF000000",    # 弾幕影の色（AARRGGBB形式）
-    "DanmakuTrackCount": 6,              # 弾幕の表示レーン数
-    "DanmakuDuration": 3.0,               # 弾幕1つの表示時間（秒）
-    "DanmakuSpeed": 1.0,                  # 弾幕スクロール速度係数（1.0が標準）
-    "DanmakuOutline": 2,                 # 外枠の太さ(px) 0で無効
-    "DanmakuOutlineColour": "FF000000",  # 外枠色 AARRGGBB
+    "DanmakuEnabled": True,             # 弾幕表示の有効/無効
+    "DanmakuFont": "Noto Sans JP",      # 弾幕に使用するフォント名
+    "DanmakuFontSize": 36,              # 弾幕フォントサイズ（pt）
+    "DanmakuColour": "FFFFFFFF",        # 弾幕文字色（AARRGGBB形式）
+    "DanmakuShadow": False,             # 弾幕に影を付けるか
+    "DanmakuShadowColour": "FF000000",  # 弾幕影の色（AARRGGBB形式）
+    "DanmakuTrackCount": 6,             # 弾幕の表示レーン数
+    "DanmakuDuration": 3.0,             # 弾幕1つの表示時間（秒）
+    "DanmakuSpeed": 1.0,                # 弾幕スクロール速度係数（1.0が標準）
+    "DanmakuOutline": 2,                # 外枠の太さ(px) 0で無効
+    "DanmakuOutlineColour": "FF000000", # 外枠色 AARRGGBB
+    "DanmakuMode": "Default",           # 弾幕表示モード(弾幕の表示位置[Default/Top/Bottom])
 
     # Clip関連（クリップ長・無音閾値）
-    "MinClipLength": 30,                  # クリップの最小長さ（秒）
-    "MaxClipLength": 60,                  # クリップの最大長さ（秒）
-    "SilenceGap": 1.0,                    # セグメント間の無音とみなす間隔（秒）
+    "MinClipLength": 30,                # クリップの最小長さ（秒）
+    "MaxClipLength": 60,                # クリップの最大長さ（秒）
+    "SilenceGap": 1.0,                  # セグメント間の無音とみなす間隔（秒）
     
     # 背景スタイル
-    "BackgroundColour": "FF000000",   # 背景色（AARRGGBB形式, 例: 黒）
+    "BackgroundColour": "FF000000",     # 背景色（AARRGGBB形式, 例: 黒）
 }
 
 app: App = None
@@ -1302,7 +1303,7 @@ def _render_sprite(parts, emotes, font, fill, show_shadow, shadow_color, emote_s
     )
     return canvas
 
-# --- 差し替え: emotes対応の弾幕フレーム生成 ---
+# --- emotes対応の弾幕フレーム生成 ---
 def generate_comment_to_png_sequence(
     comments,
     video_size,
@@ -1345,14 +1346,47 @@ def generate_comment_to_png_sequence(
     outline_color = aarrggbb_to_rgba(settings.get("DanmakuOutlineColour", "FF000000"))
     emote_size = int(round(font_size * 1.1))
 
-    # JSONに保存できる形の「parts」へ（テキスト/エモートの列）
-    # y座標は従来どおりの単純ラウンドロビン
-    track_height = H // (track_count + 2)
-    tracks = [track_height * (i + 1) for i in range(track_count)]
+    # ▼ 表示モード（"Default" / "Top" / "Bottom" / 日本語 "上" / "下" にも対応）
+    mode = str(settings.get("DanmakuMode", "Default")).lower()
 
-    # ここでは幅も計算しておく（のちの座標算出に必要）
-    # フォント情報は combine 側でも必要なので meta にも残す
-    # font_pathはここでは未使用（実描画は combine 側）だが、互換のため保存
+    # ▼ 行高をフォントとアウトライン、エモートから推定（Top/Bottom で隙間ゼロに詰める用）
+    #    - combine側の実描画とは独立だが、重なりを避けるため十分に大きく見積もる
+    try:
+        base_font = ImageFont.truetype(
+            font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or "arial.ttf",
+            font_size
+        )
+        ascent, descent = base_font.getmetrics()
+        font_height = ascent + descent
+    except Exception:
+        base_font = None
+        font_height = font_size
+
+    line_height = max(font_height, emote_size) + outline_w * 2
+    if line_height <= 0:
+        line_height = max(1, font_size)
+
+    # ▼ トラックY座標をモード別に計算
+    # Default … 従来通り（上下に余白、レーン間に実質的な「隙間」が出る）
+    # Top     … 隙間ゼロで上に詰める
+    # Bottom  … 隙間ゼロで下に詰める
+    def _cap(n):
+        # 画面内に収まる最大行数に制限（最低1）
+        return max(1, min(int(n), max(1, H // max(1, line_height))))
+
+    if mode in ("top", "上"):
+        track_count_eff = _cap(track_count)
+        tracks = [int(i * line_height) for i in range(track_count_eff)]
+    elif mode in ("bottom", "下"):
+        track_count_eff = _cap(track_count)
+        tracks = [int(H - (i + 1) * line_height) for i in range(track_count_eff)]
+    else:
+        # 従来通り：上下に1レーン分の余白を設けた等間隔
+        track_count_eff = max(1, int(track_count))
+        track_height = H // (track_count_eff + 2)
+        tracks = [int(track_height * (i + 1)) for i in range(track_count_eff)]
+
+    # JSONに保存できる形の「parts」へ（テキスト/エモートの列）
     plan_items = []
     for i, c in enumerate(comments):
         try:
@@ -1361,25 +1395,31 @@ def generate_comment_to_png_sequence(
             continue
         if not (0 <= t0 < (end_time - start_time)):
             continue
+
         message = c.get("message", "")
         emotes = c.get("emotes") or []
         parts = tokenize_rich_message(message, emotes)
-        # 幅は combine 側でも算出できるが、計算二度手間を避けるためここで保存
-        # （ただしフォントが変わると幅がズレるので、metaとセットで扱う）
-        # 幅見積り用に仮フォント（pathが無い環境用フォールバックも含む）
+
+        # 幅ヒント（フォントが変わるとズレるので、metaとセットで扱う前提）
         try:
-            font_tmp = ImageFont.truetype(font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or "arial.ttf", font_size)
-            msg_width = measure_rich_width(parts, font_tmp, emote_size)
+            if base_font is not None:
+                msg_width = measure_rich_width(parts, base_font, emote_size)
+            else:
+                # フォールバックで再生成を試す
+                tmp_font = ImageFont.truetype(
+                    font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or "arial.ttf",
+                    font_size
+                )
+                msg_width = measure_rich_width(parts, tmp_font, emote_size)
         except Exception:
-            # 幅は無くても致命ではない（combine側で再計算）
-            msg_width = None
+            msg_width = None  # combine側で再計算
 
         plan_items.append({
             "parts": parts,            # [{"type":"text","value":...}|{"type":"emote","name":...}, ...]
             "emotes": emotes,          # 元のemote辞書列（URL等を含む）
             "start": t0,               # 区間相対秒
             "duration": float(duration),
-            "y": tracks[i % track_count],
+            "y": tracks[i % track_count_eff],  # ★ モード別に求めた実効トラック数で割る
             "width_hint": msg_width,   # ヒント（無い場合はNone）
         })
 
@@ -1397,6 +1437,10 @@ def generate_comment_to_png_sequence(
             "speed": speed_factor,
             "abs_start": float(start_time),
             "abs_end": float(end_time),
+            "outline_width": outline_w,
+            "outline_colour": outline_color,
+            "mode": settings.get("DanmakuMode", "Default"),
+            "line_height_hint": line_height,  # 参考情報（combine側で使わなくても可）
         },
         "items": plan_items
     }
@@ -2018,7 +2062,7 @@ def open_danmaku_style_window():
     root = app.root
     win = Toplevel(root)
     win.title("弾幕スタイルの設定")
-    win.geometry("400x420")
+    win.geometry("400x520")
 
     entries = {}
 
@@ -2044,6 +2088,14 @@ def open_danmaku_style_window():
     all_fonts = AVAILABLE_FONTS + [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
     OptionMenu(font_frame, font_var, *all_fonts).pack(side=LEFT)
 
+    # 弾幕表示モード
+    Label(win, text="表示モード").pack(pady=4, anchor=W)
+    mode_var = StringVar(value=settings.get("DanmakuMode", "Default"))
+    mode_box = ttk.Combobox(win, state="readonly", width=18,
+                        values=["Default", "Top", "Bottom"],
+                        textvariable=mode_var)
+    mode_box.pack(pady=2, anchor=W)
+
     add_entry("フォントサイズ", "DanmakuFontSize", int)
     add_entry("フォント色 (#FFRRGGBB)", "DanmakuColour", str)
     add_entry("影の色 (#FFRRGGBB)", "DanmakuShadowColour", str)
@@ -2061,6 +2113,7 @@ def open_danmaku_style_window():
             settings["DanmakuEnabled"] = enabled_var.get()
             settings["DanmakuFont"] = font_var.get()
             settings["DanmakuShadow"] = shadow_var.get()
+            settings["DanmakuMode"] = mode_var.get()
             for key, (var, vartype) in entries.items():
                 val = var.get().strip()
                 if vartype == int:
