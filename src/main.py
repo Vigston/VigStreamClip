@@ -9,10 +9,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
-import http.server
-import socketserver
-from functools import lru_cache
+from typing import List
 import whisper
 import matplotlib
 matplotlib.use("TkAgg")
@@ -68,7 +65,6 @@ MODEL_DIR_PATH = BASE_DIR_PATH / "models"
 FONT_DIR_PATH = BASE_DIR_PATH / "fonts"
 LIB_DIR_PATH = BASE_DIR_PATH / "libs"
 RES_DIR_PATH = BASE_DIR_PATH / "res"
-SETTINGS_ROOT_PATH = BASE_DIR_PATH / "settings"
 FFMPEG_PATH = LIB_DIR_PATH / "ffmpeg.exe"
 FFPROBE_PATH = LIB_DIR_PATH / "ffprobe.exe"
 YTDLP_PATH = LIB_DIR_PATH / "yt-dlp.exe"
@@ -200,13 +196,6 @@ class Clip:
     start_time: float
     end_time: float
 
-@dataclass(frozen=True, slots=True)
-class SettingsProfile:
-    name: str
-    title_front: str
-    title_back: str
-    description_template: str
-
 # 配信データ
 @dataclass(slots=True)
 class StreamAnalysis:
@@ -231,8 +220,6 @@ class OneClickJob:
     sa: StreamAnalysis              # URL等ロック用
     settings_snapshot: dict         # ← 追加：登録時の設定スナップショット
     project_dir: str | None = None  # ← 追加：登録時に開いていたプロジェクトの絶対パス
-    settings_profile: SettingsProfile | None = None  # Slack経由で指定された設定テンプレート
-    slack_command: str | None = None                # Slackに返すための元コマンド
     status: str = "QUEUED"          # QUEUED / RUNNING / DONE / ERROR
 
 # アプリデータ
@@ -708,54 +695,6 @@ settings = {
 
 app: App = None
 whisper_model: whisper = None
-slack_server: Optional["ThreadingSlackServer"] = None
-
-@lru_cache(maxsize=64)
-def load_settings_profile(profile_name: str) -> SettingsProfile:
-    """settings/<profile_name>/ 内のテンプレートを読み込む。"""
-    if not profile_name:
-        raise ValueError("profile_name is empty")
-
-    base_dir = SETTINGS_ROOT_PATH / profile_name
-    if not base_dir.exists() or not base_dir.is_dir():
-        raise FileNotFoundError(f"設定フォルダが存在しません: {base_dir}")
-
-    def read_text(filename: str, required: bool = True) -> str:
-        path = base_dir / filename
-        if not path.exists():
-            if required:
-                raise FileNotFoundError(f"必要なテンプレートファイルがありません: {path}")
-            return ""
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-
-    title_front = read_text("title_front.txt")
-    title_back = read_text("title_back.txt")
-    description = read_text("description.txt")
-
-    return SettingsProfile(
-        name=profile_name,
-        title_front=title_front,
-        title_back=title_back,
-        description_template=description,
-    )
-
-def compose_full_title(profile: SettingsProfile, middle_title: str) -> str:
-    middle = middle_title.strip()
-    parts = [profile.title_front.strip()]
-    if middle:
-        parts.append(middle)
-    parts.append(profile.title_back.strip())
-    return " ".join(part for part in parts if part)
-
-def compose_description(profile: SettingsProfile, original_title: str, original_url: str) -> str:
-    base = profile.description_template.rstrip()
-    lines = [base, "", "【切り抜き元動画】"] if base else ["【切り抜き元動画】"]
-    if original_title:
-        lines.append(original_title)
-    if original_url:
-        lines.append(original_url)
-    return "\n".join(lines)
 
 COLOR_MAP = {
     "赤": "&H000033FF&",
@@ -3584,7 +3523,7 @@ def generate_all_thumbnails_gui():
     global app
     fileMgr = app.file_manager
     output_dir_path = fileMgr.output_dir_path(app.stream_analysis.safe_title)
-
+    
     mp4_path = filedialog.askopenfilename(
         title="サムネイル生成する元動画ファイルを選択",
         filetypes=[("MP4ファイル", "*.mp4")]
@@ -3667,140 +3606,6 @@ def generate_all_thumbnails_gui():
         except Exception as e:
             print(f"❌ サムネイル生成失敗: segment{idx} {e}")
     app.show_info_message("完了", f"すべてのサムネイル画像を\noutput/thumbnail/\nに保存しました。")
-
-def notify_slack(message: str):
-    webhook = os.environ.get("SLACK_WEBHOOK_URL")
-    if not webhook:
-        print(f"[Slack通知未設定] {message}")
-        return
-    data = json.dumps({"text": message}).encode("utf-8")
-    req = urllib.request.Request(
-        webhook,
-        data=data,
-        headers={"Content-Type": "application/json"}
-    )
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        print(f"⚠️ Slack通知に失敗しました: {e}")
-
-def notify_slack_job_update(job: OneClickJob, status: str):
-    if not job.settings_profile and not job.slack_command:
-        return
-    prefix_map = {
-        "QUEUED": "set queue",
-        "DONE": "complete queue",
-        "ERROR": "error queue",
-    }
-    prefix = prefix_map.get(status)
-    if not prefix:
-        return
-    profile_name = job.settings_profile.name if job.settings_profile else ""
-    url = job.sa.video_url or ""
-    message = f"{prefix}\n{profile_name}, {url}"
-    notify_slack(message)
-
-def parse_set_queue_command(text: str) -> tuple[str, str]:
-    if not text:
-        raise ValueError("コマンドが空です")
-    lowered = text.lower()
-    if not lowered.startswith("set queue"):
-        raise ValueError("set queue コマンドではありません")
-    payload = text[len("set queue"):].strip()
-    if not payload:
-        raise ValueError("設定名とURLが指定されていません")
-    if "," not in payload:
-        raise ValueError("設定名とURLはカンマで区切ってください")
-    profile, url = payload.split(",", 1)
-    profile = profile.strip()
-    url = url.strip()
-    if not profile or not url:
-        raise ValueError("設定名またはURLが空です")
-    parsed_url = urllib.parse.urlparse(url)
-    if not parsed_url.scheme or not parsed_url.netloc:
-        raise ValueError("URLの形式が不正です")
-    return profile, url
-
-def enqueue_slack_job(profile_name: str, url: str, command_text: str | None = None) -> int:
-    global app
-    if app is None:
-        raise RuntimeError("アプリケーションが初期化されていません")
-    profile = load_settings_profile(profile_name)
-    sa = StreamAnalysis(video_url=normalize_youtube_url(url), locked=True)
-
-    with app.queue_lock:
-        app.job_seq += 1
-        proj = app.file_manager.project_file_path
-        proj_abs = str(proj.resolve()) if proj else None
-        job = OneClickJob(
-            id=app.job_seq,
-            sa=sa,
-            settings_snapshot=copy.deepcopy(settings),
-            project_dir=proj_abs,
-            settings_profile=profile,
-            slack_command=command_text,
-        )
-        app.queue_items.append(job)
-        refresh_queue_ui_nolock()
-
-    notify_slack_job_update(job, "QUEUED")
-    start_queue_worker_if_needed()
-    return job.id
-
-class SlackCommandHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "VigStreamClipSlack/1.0"
-
-    def do_POST(self):
-        if self.path != "/slack/command":
-            self.send_error(404)
-            return
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length).decode("utf-8") if length else ""
-        params = urllib.parse.parse_qs(body)
-        verification_token = os.environ.get("SLACK_VERIFICATION_TOKEN")
-        if verification_token:
-            token = params.get("token", [""])[0]
-            if token != verification_token:
-                self.send_error(403)
-                return
-        text = params.get("text", [""])[0]
-        try:
-            profile, url = parse_set_queue_command(text)
-            enqueue_slack_job(profile, url, command_text=text)
-            response_text = "キューに登録しました"
-        except Exception as e:
-            response_text = f"エラー: {e}"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(response_text.encode("utf-8"))
-
-    def log_message(self, format, *args):
-        # 標準のアクセスログは抑制
-        pass
-
-class ThreadingSlackServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-def start_slack_command_server():
-    global slack_server
-    port_env = os.environ.get("SLACK_COMMAND_PORT")
-    enable_env = os.environ.get("ENABLE_SLACK_COMMAND", "0")
-    if not port_env and enable_env not in {"1", "true", "TRUE"}:
-        print("Slackコマンドサーバーは無効化されています")
-        return None
-    port = int(port_env) if port_env else 5050
-    try:
-        server = ThreadingSlackServer(("0.0.0.0", port), SlackCommandHandler)
-    except OSError as e:
-        print(f"⚠️ Slackコマンドサーバーの起動に失敗しました: {e}")
-        return None
-    slack_server = server
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    print(f"Slackコマンドサーバーを起動しました: port={port}")
-    return server
 
 def enqueue_current_url():
     global app
@@ -3907,33 +3712,18 @@ def queue_worker_loop():
             
             # セグメント生成が終わるまで待機
             wait_for_segments_ready()
-
+            
             generate_clips_from_folder()
-
-            if job.settings_profile:
-                middle_title = app.stream_analysis.raw_title or app.stream_analysis.safe_title
-                final_title = compose_full_title(job.settings_profile, middle_title)
-                description = compose_description(
-                    job.settings_profile,
-                    app.stream_analysis.raw_title,
-                    job.sa.video_url,
-                )
-                print("📄 Slack設定に基づくタイトル候補:")
-                print(final_title)
-                print("📄 Slack設定に基づく概要欄候補:")
-                print(description)
 
             with app.queue_lock:
                 job.status = "DONE"
                 refresh_queue_ui_nolock()
-            notify_slack_job_update(job, "DONE")
 
         except Exception:
             import traceback; traceback.print_exc()
             with app.queue_lock:
                 job.status = "ERROR"
                 refresh_queue_ui_nolock()
-            notify_slack_job_update(job, "ERROR")
         finally:
             # 設定を復元
             if prev_settings is not None:
@@ -3981,12 +3771,10 @@ def main():
     fileMgr.load_file_settings(app.settings)
     # 分析結果読み込み
     fileMgr.load_analysis_results(app.stream_analysis)
-
+    
     CUSTOM_FONT_PATHS = scan_custom_fonts()
     AVAILABLE_FONTS += [f for f in CUSTOM_FONT_PATHS if f not in AVAILABLE_FONTS]
-
-    start_slack_command_server()
-
+    
     print(f"アプリケーション実行開始します")
     # アプリケーションの実行処理
     app.run()
