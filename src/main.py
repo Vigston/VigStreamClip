@@ -28,7 +28,8 @@ import tempfile
 import traceback
 import copy
 from shutil import which
-from chat_downloader import ChatDownloader
+import http.cookiejar
+from yt_chat_downloader import YouTubeChatDownloader
 from io import BytesIO
 import urllib.request
 import queue
@@ -1796,6 +1797,172 @@ def normalize_youtube_url(url: str) -> str:
     new_query = urllib.parse.urlencode(query, doseq=True)
     return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
+def _run_yt_dlp_title_command(video_url: str, cookie_path: Path | None = None) -> str | None:
+    cmd = [
+        str(YTDLP_PATH),
+        "--ignore-config",
+        "--skip-download",
+    ]
+    if cookie_path is not None:
+        cmd += ["--cookies", str(cookie_path)]
+    cmd += ["--print", "%(title)s", video_url]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="cp932",
+            errors="replace",
+            env=_build_yt_dlp_env()
+        )
+    except Exception as e:
+        print("yt-dlp実行中に想定外のエラー:", e)
+        traceback.print_exc()
+        return None
+
+    title = result.stdout.strip()
+    if result.returncode == 0 and title:
+        return title
+
+    mode = "with cookies" if cookie_path is not None else "without cookies"
+    print(f"[title] yt-dlp failed ({mode})")
+    print("returncode:", result.returncode)
+    print("stdout:", result.stdout)
+    print("stderr:", result.stderr)
+    print("args:", result.args)
+    return None
+
+def _build_yt_dlp_env() -> dict:
+    env = os.environ.copy()
+    tmp_dir = BASE_DIR_PATH / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    env["TEMP"] = str(tmp_dir)
+    env["TMP"] = str(tmp_dir)
+    return env
+
+def _fetch_youtube_oembed_title(video_url: str) -> str | None:
+    params = urllib.parse.urlencode({"url": video_url, "format": "json"})
+    oembed_url = f"https://www.youtube.com/oembed?{params}"
+    req = urllib.request.Request(
+        oembed_url,
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
+
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        payload = resp.read().decode("utf-8", errors="replace")
+
+    obj = json.loads(payload)
+    title = str(obj.get("title", "")).strip()
+    return title or None
+
+def resolve_video_title(video_url: str) -> str | None:
+    cookie_path = RES_DIR_PATH / "cookies.txt"
+
+    if cookie_path.exists():
+        print("Title fetch: try yt-dlp (with cookies)")
+        title = _run_yt_dlp_title_command(video_url, cookie_path)
+        if title:
+            return title
+
+    print("Title fetch: try yt-dlp (without cookies)")
+    title = _run_yt_dlp_title_command(video_url)
+    if title:
+        return title
+
+    print("Title fetch: try YouTube oEmbed fallback")
+    try:
+        return _fetch_youtube_oembed_title(video_url)
+    except Exception as e:
+        print("Title fetch failed on oEmbed:", e)
+        traceback.print_exc()
+        return None
+
+def _load_cookies_into_session(session, cookie_path: Path) -> int:
+    jar = http.cookiejar.MozillaCookieJar(str(cookie_path))
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception as e:
+        raise RuntimeError(f"cookies.txt の読み込みに失敗しました: {e}")
+
+    count = 0
+    for cookie in jar:
+        session.cookies.set_cookie(cookie)
+        count += 1
+    return count
+
+def _parse_chat_timestamp_to_seconds(timestamp_text: str | None) -> float | None:
+    text = (timestamp_text or "").strip()
+    if not text or text.startswith("-"):
+        return None
+
+    parts = text.split(":")
+    if len(parts) == 0 or len(parts) > 3:
+        return None
+
+    try:
+        values = [float(part) for part in parts]
+    except ValueError:
+        return None
+
+    if any(v < 0 for v in values):
+        return None
+
+    if len(values) == 3:
+        hours, minutes, seconds = values
+        return (hours * 3600.0) + (minutes * 60.0) + seconds
+    if len(values) == 2:
+        minutes, seconds = values
+        return (minutes * 60.0) + seconds
+    return values[0]
+
+def _normalize_yt_chat_messages(raw_messages: list[dict]) -> list[dict]:
+    normalized = []
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            continue
+
+        message = str(item.get("comment", "")).strip()
+        if not message:
+            continue
+
+        time_in_seconds = None
+        offset_ms = item.get("video_offset_ms")
+        if offset_ms not in (None, ""):
+            try:
+                time_in_seconds = float(offset_ms) / 1000.0
+            except (TypeError, ValueError):
+                time_in_seconds = None
+
+        if time_in_seconds is None:
+            time_in_seconds = _parse_chat_timestamp_to_seconds(str(item.get("timestamp", "")))
+
+        if time_in_seconds is None or (not math.isfinite(time_in_seconds)) or time_in_seconds < 0:
+            continue
+
+        normalized.append({
+            "time_in_seconds": time_in_seconds,
+            "message": message,
+            "emotes": []
+        })
+
+    normalized.sort(key=lambda x: x["time_in_seconds"])
+    return normalized
+
+def _download_chat_via_yt_chat_downloader(video_url: str, cookie_path: Path | None = None) -> list[dict]:
+    downloader = YouTubeChatDownloader()
+    if cookie_path is not None:
+        loaded = _load_cookies_into_session(downloader.session, cookie_path)
+        print(f"yt-chat-downloader: cookiesを読み込み ({loaded}件)")
+
+    raw_messages = downloader.download_chat(
+        video_url=video_url,
+        chat_type="live",
+        output_file=None,
+        quiet=True
+    )
+    return _normalize_yt_chat_messages(raw_messages)
+
 def create_new_file():
     global app
     name = simpledialog.askstring("新規ファイル", "ファイル名（例: プロジェクト名）を入力してください")
@@ -2811,34 +2978,11 @@ def update_paths_from_url() -> bool:
     normalized_url = normalize_youtube_url(url_input)
     sa.video_url = normalized_url
 
-    # タイトル取得
-    try:
-        cookie_path = RES_DIR_PATH / "cookies.txt"
-
-        cmd = [
-            str(YTDLP_PATH),
-            "--ffmpeg-location", str(LIB_DIR_PATH),
-            "--cookies",         str(cookie_path),
-            "--get-title",       normalized_url,
-        ]
-        
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, encoding="cp932", errors="replace"
-        )
-        title = result.stdout.strip()
-        if result.returncode != 0 or not title:
-            print("returncode:", result.returncode)
-            print("stdout:", result.stdout)
-            print("stderr:", result.stderr)
-            print("args:", result.args)
-            print("YTDLP_PATH exists:", os.path.exists(str(YTDLP_PATH)))
-            app.show_error_message("エラー", "動画タイトルが取得できませんでした")
-            return False
-    except Exception as e:
-        print("yt-dlp実行中に想定外のエラー:", e)
-        traceback.print_exc()
-        app.show_error_message("エラー", f"yt-dlp実行中に例外が発生しました:\n{e}")
+    # タイトル取得（yt-dlp: cookiesあり -> cookiesなし -> oEmbed）
+    title = resolve_video_title(normalized_url)
+    if not title:
+        print("YTDLP_PATH exists:", os.path.exists(str(YTDLP_PATH)))
+        app.show_error_message("エラー", "動画タイトルが取得できませんでした")
         return False
 
     # safe_title 確定
@@ -2871,7 +3015,8 @@ def one_click_pipeline():
         print("🚀 クリップ生成（ワンボタン）パイプライン開始")
 
         # ① チャット取得
-        download_chat()
+        if not download_chat(skip_update_paths=True):
+            return
 
         # ② 動画取得
         download_video()
@@ -2918,31 +3063,51 @@ def one_click_pipeline():
         print("✅ パイプラインのキックまで完了")
     threading.Thread(target=run, daemon=True).start()
 
-def download_chat():
+def download_chat(skip_update_paths: bool = False) -> bool:
     global app
 
-    if not update_paths_from_url():
-        return
+    if (not skip_update_paths) and (not update_paths_from_url()):
+        return False
     if os.path.exists(app.stream_analysis.chat_file):
         print("チャットファイルは既に存在します。")
         app.show_info_message("情報", "チャットファイルは既に存在します。")
-        return
+        return True
     
     print("チャットデータダウンロード開始・・・", flush=True)
-    try:
-        chat = ChatDownloader().get_chat(app.stream_analysis.video_url)
-        data = []
-        for i, message in enumerate(chat, start=1):
-            data.append(message)
-            #if i % 100 == 0:
-                #print(f"取得中... {i}件")
-        with open(app.stream_analysis.chat_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print("✅ チャット保存完了")
-    except Exception as e:
-        print(f"❌ エラー: {e}")
-    print("チャットデータダウンロード終了")
-    app.show_info_message("完了", "チャットダウンロード完了！")
+    cookie_path = RES_DIR_PATH / "cookies.txt"
+    attempts = []
+    if cookie_path.exists():
+        attempts.append((
+            "yt-chat-downloader(cookies)",
+            lambda: _download_chat_via_yt_chat_downloader(app.stream_analysis.video_url, cookie_path)
+        ))
+    attempts.append((
+        "yt-chat-downloader(no-cookies)",
+        lambda: _download_chat_via_yt_chat_downloader(app.stream_analysis.video_url)
+    ))
+
+    errors = []
+    for label, fetcher in attempts:
+        print(f"チャット取得を試行: {label}")
+        try:
+            data = fetcher()
+            if not data:
+                raise RuntimeError("チャット件数が0でした")
+            with open(app.stream_analysis.chat_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print(f"✅ チャット保存完了 ({label}, {len(data)}件)")
+            print("チャットデータダウンロード終了")
+            app.show_info_message("完了", "チャットダウンロード完了！")
+            return True
+        except Exception as e:
+            errors.append(f"{label}: {e}")
+            print(f"⚠️ {label} 失敗: {e}")
+            traceback.print_exc()
+
+    err_text = "\n".join(errors[-4:])
+    app.show_error_message("エラー", f"チャット取得に失敗しました:\n{err_text}")
+    print("チャットデータダウンロード終了(失敗)")
+    return False
 
 def download_video():
     global app
@@ -3699,12 +3864,14 @@ def queue_worker_loop():
             settings.update(job.settings_snapshot)
 
             # タイトル/各種パス確定（ジョブのURLで）
-            update_paths_from_url()
+            if not update_paths_from_url():
+                raise RuntimeError("URLからタイトル/各種パスの確定に失敗しました。")
             with app.queue_lock:
                 refresh_queue_ui_nolock()
 
             # ①チャット → ②動画 → ③分析(join) → ④セグメント → ⑤クリップ
-            download_chat()
+            if not download_chat(skip_update_paths=True):
+                raise RuntimeError("チャット取得に失敗しました。")
             download_video()
             t = analyze_and_plot(show_graph=False)
             t.join()
