@@ -84,6 +84,14 @@ utils.get_encoder_name = lambda: str(AudioSegment.converter)
 
 # カスタムフォントパス
 CUSTOM_FONT_PATHS = {}
+WINDOWS_FONT_DIR = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+DEFAULT_JP_FONT_FILES = [
+    "NotoSansJP-VF.ttf",
+    "BIZ-UDGothicR.ttc",
+    "meiryo.ttc",
+    "YuGothM.ttc",
+    "msgothic.ttc",
+]
 # 使用可能なフォント一覧
 AVAILABLE_FONTS = [
     "Noto Sans",
@@ -997,6 +1005,102 @@ def scan_custom_fonts() -> dict:
 
     return font_map
 
+def _normalize_font_lookup_name(name: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+def _iter_existing_font_paths(paths) -> list[str]:
+    resolved = []
+    seen = set()
+    for raw in paths:
+        if not raw:
+            continue
+        try:
+            path = Path(raw)
+        except Exception:
+            continue
+        if not path.is_absolute():
+            path = WINDOWS_FONT_DIR / path
+        if not path.exists():
+            continue
+        key = str(path.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(str(path.resolve()))
+    return resolved
+
+def _windows_font_candidates_for_name(font_name: str | None) -> list[str]:
+    if not font_name:
+        return _iter_existing_font_paths(DEFAULT_JP_FONT_FILES)
+
+    normalized = _normalize_font_lookup_name(font_name)
+    direct_candidates = [
+        font_name,
+        f"{font_name}.ttf",
+        f"{font_name}.otf",
+        f"{font_name}.ttc",
+        f"{font_name}.otc",
+    ]
+
+    alias_candidates = []
+    if normalized.startswith("notosansjp") or normalized.startswith("notosans"):
+        alias_candidates.extend(["NotoSansJP-VF.ttf"])
+    elif normalized.startswith("notoserifjp") or normalized.startswith("notoserif"):
+        alias_candidates.extend(["NotoSerifJP-VF.ttf"])
+    elif "yugothic" in normalized or normalized.startswith("yugoth"):
+        alias_candidates.extend(["YuGothM.ttc", "YuGothR.ttc", "YuGothB.ttc", "YuGothL.ttc"])
+    elif "meiryo" in normalized:
+        alias_candidates.extend(["meiryo.ttc", "meiryob.ttc"])
+    elif "msgothic" in normalized or ("gothic" in normalized and normalized.startswith("ms")):
+        alias_candidates.extend(["msgothic.ttc"])
+    elif "msmincho" in normalized or ("mincho" in normalized and normalized.startswith("ms")):
+        alias_candidates.extend(["msmincho.ttc"])
+    elif "bizudgothic" in normalized or ("bizud" in normalized and "gothic" in normalized):
+        alias_candidates.extend(["BIZ-UDGothicR.ttc", "BIZ-UDGothicB.ttc"])
+    elif "bizudmincho" in normalized or ("bizud" in normalized and "mincho" in normalized):
+        alias_candidates.extend(["BIZ-UDMinchoM.ttc"])
+    elif "uddigikyokasho" in normalized or "kyokasho" in normalized:
+        alias_candidates.extend(["UDDigiKyokashoN-R.ttc", "UDDigiKyokashoN-B.ttc"])
+
+    return _iter_existing_font_paths(direct_candidates + alias_candidates + DEFAULT_JP_FONT_FILES)
+
+def resolve_font_path(font_name: str | None, explicit_path: str | Path | None = None) -> str | None:
+    explicit_candidates = []
+    if explicit_path:
+        explicit_candidates.append(explicit_path)
+    if font_name:
+        explicit_candidates.append(font_name)
+
+    resolved_candidates = _iter_existing_font_paths(explicit_candidates)
+    if resolved_candidates:
+        return resolved_candidates[0]
+
+    if font_name and font_name in CUSTOM_FONT_PATHS:
+        return str(Path(CUSTOM_FONT_PATHS[font_name]).resolve())
+
+    system_candidates = _windows_font_candidates_for_name(font_name)
+    if system_candidates:
+        return system_candidates[0]
+
+    return None
+
+def load_pillow_font(font_size: int, font_name: str | None = None, font_path: str | Path | None = None) -> ImageFont.FreeTypeFont:
+    candidates = []
+    resolved = resolve_font_path(font_name, font_path)
+    if resolved:
+        candidates.append(resolved)
+    candidates.extend(_windows_font_candidates_for_name(font_name))
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, font_size)
+        except Exception as e:
+            last_error = e
+
+    detail = font_name or font_path or "default"
+    raise RuntimeError(f"日本語対応フォントを読み込めませんでした: {detail} ({last_error})")
+
 # フォント名から max_width を推定する関数
 def estimate_max_width(resolution: str, font_name: str, font_size: int) -> int:
     screen_width = int(resolution.split("x")[0])
@@ -1346,6 +1450,7 @@ def generate_comment_to_png_sequence(
     outline_w = int(settings.get("DanmakuOutline", 0))
     outline_color = aarrggbb_to_rgba(settings.get("DanmakuOutlineColour", "FF000000"))
     emote_size = int(round(font_size * 1.1))
+    resolved_font_path = resolve_font_path(settings.get("DanmakuFont"), font_path)
 
     # ▼ 表示モード（"Default" / "Top" / "Bottom" / 日本語 "上" / "下" にも対応）
     mode = str(settings.get("DanmakuMode", "Default")).lower()
@@ -1353,15 +1458,15 @@ def generate_comment_to_png_sequence(
     # ▼ 行高をフォントとアウトライン、エモートから推定（Top/Bottom で隙間ゼロに詰める用）
     #    - combine側の実描画とは独立だが、重なりを避けるため十分に大きく見積もる
     try:
-        base_font = ImageFont.truetype(
-            font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or "arial.ttf",
-            font_size
+        base_font = load_pillow_font(
+            font_size=font_size,
+            font_name=settings.get("DanmakuFont"),
+            font_path=resolved_font_path
         )
         ascent, descent = base_font.getmetrics()
         font_height = ascent + descent
-    except Exception:
-        base_font = None
-        font_height = font_size
+    except Exception as e:
+        raise RuntimeError(f"弾幕フォントの読み込みに失敗しました: {settings.get('DanmakuFont')}") from e
 
     line_height = max(font_height, emote_size) + outline_w * 2
     if line_height <= 0:
@@ -1407,9 +1512,10 @@ def generate_comment_to_png_sequence(
                 msg_width = measure_rich_width(parts, base_font, emote_size)
             else:
                 # フォールバックで再生成を試す
-                tmp_font = ImageFont.truetype(
-                    font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or "arial.ttf",
-                    font_size
+                tmp_font = load_pillow_font(
+                    font_size=font_size,
+                    font_name=settings.get("DanmakuFont"),
+                    font_path=resolved_font_path
                 )
                 msg_width = measure_rich_width(parts, tmp_font, emote_size)
         except Exception:
@@ -1433,7 +1539,7 @@ def generate_comment_to_png_sequence(
             "shadow_colour": shadow_color,
             "font_size": font_size,
             "font_name": settings.get("DanmakuFont"),
-            "font_path": font_path or CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont")) or None,
+            "font_path": resolved_font_path,
             "emote_size": emote_size,
             "speed": speed_factor,
             "abs_start": float(start_time),
@@ -1481,7 +1587,7 @@ def combine_video_with_danmaku_overlay(
     shadow_color = tuple(meta.get("shadow_colour", (0,0,0,255)))
     font_size = int(meta.get("font_size", 36))
     font_name = meta.get("font_name") or settings.get("DanmakuFont")
-    font_path = meta.get("font_path") or CUSTOM_FONT_PATHS.get(font_name) or "arial.ttf"
+    font_path = resolve_font_path(font_name, meta.get("font_path"))
     emote_size = int(meta.get("emote_size", max(1, round(font_size*1.1))))
     # speed は「表示時間を縮める／伸ばす」ためだけに使う
     speed = float(meta.get("speed", 1.0))
@@ -1493,10 +1599,11 @@ def combine_video_with_danmaku_overlay(
     total_sec = max(0.0, abs_end - abs_start)
     frame_count = int(math.ceil(total_sec * fps))
 
-    try:
-        font = ImageFont.truetype(font_path, font_size)
-    except Exception:
-        font = ImageFont.truetype("arial.ttf", font_size)
+    font = load_pillow_font(
+        font_size=font_size,
+        font_name=font_name,
+        font_path=font_path
+    )
 
     # ---- スプライトをプリレンダー ----
     sprites = []
@@ -1760,7 +1867,7 @@ def export_clip(index: int, clip: Clip, video_path: Path, output_dir: Path, chat
     # ⑨ 弾幕PNG連番生成
     video_resolution = get_video_resolution(clip_path)
     w, h = map(int, video_resolution.split("x"))
-    font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
+    font_path = resolve_font_path(settings.get("DanmakuFont"))
     fps = 30
     generate_comment_to_png_sequence(
         comments,
@@ -1797,15 +1904,66 @@ def normalize_youtube_url(url: str) -> str:
     new_query = urllib.parse.urlencode(query, doseq=True)
     return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
-def _run_yt_dlp_title_command(video_url: str, cookie_path: Path | None = None) -> str | None:
+def _discover_yt_dlp_js_runtimes() -> dict[str, dict[str, str]]:
+    runtimes: dict[str, dict[str, str]] = {}
+    program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+    home_dir = Path.home()
+    candidates: list[tuple[str, list[str], list[Path]]] = [
+        ("deno", ["deno"], [home_dir / ".deno" / "bin" / "deno.exe"]),
+        ("node", ["node"], [
+            program_files / "nodejs" / "node.exe",
+            program_files_x86 / "nodejs" / "node.exe",
+        ]),
+        ("bun", ["bun"], [home_dir / ".bun" / "bin" / "bun.exe"]),
+        ("quickjs", ["qjs", "quickjs"], []),
+    ]
+
+    for runtime_name, command_names, fallback_paths in candidates:
+        runtime_path = None
+        for command_name in command_names:
+            runtime_path = which(command_name)
+            if runtime_path:
+                break
+        if runtime_path is None:
+            for fallback_path in fallback_paths:
+                if fallback_path.exists():
+                    runtime_path = str(fallback_path)
+                    break
+        if runtime_path is not None:
+            runtimes[runtime_name] = {"path": runtime_path}
+
+    return runtimes
+
+def _build_yt_dlp_cli_runtime_args() -> list[str]:
+    args: list[str] = []
+    for runtime_name, runtime_config in _discover_yt_dlp_js_runtimes().items():
+        runtime_path = runtime_config.get("path")
+        args += ["--js-runtimes", f"{runtime_name}:{runtime_path}" if runtime_path else runtime_name]
+    return args
+
+def _build_yt_chat_downloader_kwargs(cookie_path: Path | None = None) -> dict:
+    kwargs = {}
+    if cookie_path is not None:
+        kwargs["cookie_path"] = str(cookie_path)
+    js_runtimes = _discover_yt_dlp_js_runtimes()
+    if js_runtimes:
+        kwargs["js_runtimes"] = js_runtimes
+    return kwargs
+
+def _build_yt_dlp_cli_command(cookie_path: Path | None = None) -> list[str]:
     cmd = [
         str(YTDLP_PATH),
         "--ignore-config",
-        "--skip-download",
     ]
     if cookie_path is not None:
         cmd += ["--cookies", str(cookie_path)]
-    cmd += ["--print", "%(title)s", video_url]
+    cmd += _build_yt_dlp_cli_runtime_args()
+    return cmd
+
+def _run_yt_dlp_title_command(video_url: str, cookie_path: Path | None = None) -> str | None:
+    cmd = _build_yt_dlp_cli_command(cookie_path)
+    cmd += ["--skip-download", "--print", "%(title)s", video_url]
 
     try:
         result = subprocess.run(
@@ -1950,9 +2108,11 @@ def _normalize_yt_chat_messages(raw_messages: list[dict]) -> list[dict]:
     return normalized
 
 def _download_chat_via_yt_chat_downloader(video_url: str, cookie_path: Path | None = None) -> list[dict]:
-    downloader = YouTubeChatDownloader()
+    downloader = YouTubeChatDownloader(**_build_yt_chat_downloader_kwargs(cookie_path))
     if cookie_path is not None:
-        loaded = _load_cookies_into_session(downloader.session, cookie_path)
+        loaded = getattr(downloader, "loaded_cookie_count", 0)
+        if loaded == 0:
+            loaded = _load_cookies_into_session(downloader.session, cookie_path)
         print(f"yt-chat-downloader: cookiesを読み込み ({loaded}件)")
 
     raw_messages = downloader.download_chat(
@@ -2644,7 +2804,7 @@ def preview_danmaku_as_temp_video(duration: float = 8.0, fps: int = 30):
 
             # 3) plan(JSON)作成
             frames_dir.mkdir(parents=True, exist_ok=True)
-            font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
+            font_path = resolve_font_path(settings.get("DanmakuFont"))
             generate_comment_to_png_sequence(
                 comments=comments,
                 video_size=(W, H),
@@ -2709,7 +2869,7 @@ def generate_subtitle_filter(srt_path: Path) -> str:
     )
     
     srt_path_escaped = escape_ffmpeg_path(srt_path)
-    font_path = CUSTOM_FONT_PATHS.get(font_name)
+    font_path = resolve_font_path(font_name)
     if font_path:
         fontsdir_escaped = escape_ffmpeg_path(Path(font_path).parent)
         return f"subtitles='{srt_path_escaped}:fontsdir={fontsdir_escaped}:force_style={style_str}'"
@@ -3126,15 +3286,15 @@ def download_video():
     final_output = save_dir / f"{base_name}_{target_width}x{target_height}.mp4"
     print("動画(1920x1080)ダウンロード中・・・")
     # 🔹 yt-dlpで 1920x1080 ダウンロード
-    subprocess.run([
-        str(YTDLP_PATH),
+    ytdlp_cmd = _build_yt_dlp_cli_command(RES_DIR_PATH / "cookies.txt")
+    ytdlp_cmd += [
         "--force-overwrites",
         "-f", "312+234/617+234/270+234/614+234/299+140/137+140/298+140/136+140/135+140/134+140/22/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
         "--merge-output-format", "mp4",
         "-o", str(base_output),
-        "--cookies", str(RES_DIR_PATH / "cookies.txt"),
         app.stream_analysis.video_url
-    ], check=True)
+    ]
+    subprocess.run(ytdlp_cmd, check=True)
     print(f"✅ 動画(1920x1080)をダウンロード完了: {base_output.name}")
     # 🔹 ユーザー指定が1920x1080なら変換不要
     if resolution == "1920x1080":
@@ -3430,7 +3590,7 @@ def add_danmaku_full_video_gui():
 
             video_resolution = get_video_resolution(video_path)
             w, h = map(int, video_resolution.split("x"))
-            font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
+            font_path = resolve_font_path(settings.get("DanmakuFont"))
             fps = 30
 
             work_dir = video_path.parent / (video_path.stem + "_danmaku_frames")
@@ -3570,7 +3730,7 @@ def apply_subtitle_and_danmaku_to_video(video_path: Path):
             # 解像度とフォント
             video_resolution = get_video_resolution(video_path)
             w, h = map(int, video_resolution.split("x"))
-            font_path = CUSTOM_FONT_PATHS.get(settings.get("DanmakuFont"))
+            font_path = resolve_font_path(settings.get("DanmakuFont"))
             fps = 30
             generate_comment_to_png_sequence(
                 comments=comments,
@@ -3705,7 +3865,7 @@ def generate_all_thumbnails_gui():
     area_h = settings.get("TitleAreaHeight")
     align_v = settings.get("TitleAlignV")    # "top", "center", "bottom"
     align_h = settings.get("TitleAlignH") # "left", "center", "right"
-    font_path = CUSTOM_FONT_PATHS.get(title_font_name)
+    font_path = resolve_font_path(title_font_name)
     video_path = Path(mp4_path)
     valleys = app.stream_analysis.valleys
     peaks = app.stream_analysis.peaks
@@ -3745,10 +3905,11 @@ def generate_all_thumbnails_gui():
             img = Image.open(thumbnail_base_file)
             # フォントインスタンス作成
             try:
-                if font_path:
-                    font = ImageFont.truetype(font_path, title_font_size)
-                else:
-                    font = ImageFont.truetype("Noto Sans JP", title_font_size)
+                font = load_pillow_font(
+                    font_size=title_font_size,
+                    font_name=title_font_name,
+                    font_path=font_path
+                )
             except Exception:
                 font = ImageFont.load_default()
             # 描画エリア
